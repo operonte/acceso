@@ -17,8 +17,11 @@ import '../utils/validators.dart';
 import '../utils/file_saver.dart' as file_saver;
 import '../utils/supabase_sync_manager.dart';
 
+import 'login_screen.dart' show UserRole;
+
 class DashboardScreen extends StatefulWidget {
-  const DashboardScreen({super.key});
+  final UserRole userRole;
+  const DashboardScreen({super.key, this.userRole = UserRole.guardia});
 
   @override
   State<DashboardScreen> createState() => _DashboardScreenState();
@@ -2223,6 +2226,43 @@ class _DashboardScreenState extends State<DashboardScreen> {
           ],
         ),
         actions: [
+          // Role Badge
+          Center(
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              decoration: BoxDecoration(
+                color: widget.userRole == UserRole.admin
+                    ? Colors.redAccent.withValues(alpha: 0.15)
+                    : (widget.userRole == UserRole.guardia
+                        ? const Color(0xFF10B981).withValues(alpha: 0.15)
+                        : Colors.blueAccent.withValues(alpha: 0.15)),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(
+                  color: widget.userRole == UserRole.admin
+                      ? Colors.redAccent
+                      : (widget.userRole == UserRole.guardia
+                          ? const Color(0xFF10B981)
+                          : Colors.blueAccent),
+                  width: 1,
+                ),
+              ),
+              child: Text(
+                widget.userRole == UserRole.admin
+                    ? 'ADMIN'
+                    : (widget.userRole == UserRole.guardia ? 'GUARDIA' : 'CLIENTE'),
+                style: TextStyle(
+                  fontSize: 10,
+                  fontWeight: FontWeight.bold,
+                  color: widget.userRole == UserRole.admin
+                      ? Colors.redAccent
+                      : (widget.userRole == UserRole.guardia
+                          ? const Color(0xFF10B981)
+                          : Colors.blueAccent),
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
           // Cloud sync status indicator
           ValueListenableBuilder<bool>(
             valueListenable: SupabaseSyncManager.isOnline,
@@ -2262,7 +2302,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
           const SizedBox(width: 8),
           // Live Clock widget
           Container(
-            margin: const EdgeInsets.only(right: 16),
+            margin: const EdgeInsets.only(right: 8),
             alignment: Alignment.center,
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
@@ -2279,51 +2319,90 @@ class _DashboardScreenState extends State<DashboardScreen> {
               ],
             ),
           ),
+          IconButton(
+            tooltip: 'Cerrar Sesión',
+            icon: const Icon(Icons.logout_rounded, color: slate400),
+            onPressed: () {
+              Navigator.pushReplacementNamed(context, '/');
+            },
+          ),
+          const SizedBox(width: 8),
         ],
       ),
 
       // --- Body switching tabs ---
-      body: _currentTabIndex == 0
-          ? _buildMonitoreoTab()
-          : (_currentTabIndex == 1 ? _buildPreAuthTab() : _buildBlacklistTab()),
+      body: _buildBody(),
 
       // --- QR Floating Action Button ---
-      floatingActionButton: FloatingActionButton.extended(
-        backgroundColor: const Color(0xFF10B981),
-        foregroundColor: Colors.white,
-        icon: const Icon(Icons.qr_code_scanner),
-        label: const Text('Escanear QR', style: TextStyle(fontWeight: FontWeight.bold)),
-        onPressed: _showScannerOptions,
-      ),
+      floatingActionButton: widget.userRole == UserRole.cliente
+          ? null
+          : FloatingActionButton.extended(
+              backgroundColor: const Color(0xFF10B981),
+              foregroundColor: Colors.white,
+              icon: const Icon(Icons.qr_code_scanner),
+              label: const Text('Escanear QR', style: TextStyle(fontWeight: FontWeight.bold)),
+              onPressed: _showScannerOptions,
+            ),
 
       // --- Bottom Navigation Menu ---
-      bottomNavigationBar: BottomNavigationBar(
-        currentIndex: _currentTabIndex,
-        onTap: (index) {
-          setState(() {
-            _currentTabIndex = index;
-          });
-        },
-        backgroundColor: slate800,
-        selectedItemColor: const Color(0xFF10B981),
-        unselectedItemColor: slate400,
-        selectedLabelStyle: const TextStyle(fontWeight: FontWeight.bold),
-        items: const [
-          BottomNavigationBarItem(
-            icon: Icon(Icons.dashboard_customize_rounded),
-            label: 'Monitoreo',
-          ),
-          BottomNavigationBarItem(
-            icon: Icon(Icons.event_available_rounded),
-            label: 'Pre-autorizaciones',
-          ),
-          BottomNavigationBarItem(
-            icon: Icon(Icons.block_flipped),
-            label: 'Lista Negra',
-          ),
-        ],
-      ),
+      bottomNavigationBar: widget.userRole == UserRole.cliente
+          ? null
+          : BottomNavigationBar(
+              currentIndex: _currentTabIndex,
+              onTap: (index) {
+                setState(() {
+                  _currentTabIndex = index;
+                });
+              },
+              backgroundColor: slate800,
+              selectedItemColor: const Color(0xFF10B981),
+              unselectedItemColor: slate400,
+              selectedLabelStyle: const TextStyle(fontWeight: FontWeight.bold),
+              items: _getNavBarItems(),
+            ),
     );
+  }
+
+  // --- Helper Methods for Role-based UI ---
+
+  List<BottomNavigationBarItem> _getNavBarItems() {
+    final List<BottomNavigationBarItem> items = [
+      const BottomNavigationBarItem(
+        icon: Icon(Icons.dashboard_customize_rounded),
+        label: 'Monitoreo',
+      ),
+    ];
+    if (widget.userRole == UserRole.admin || widget.userRole == UserRole.guardia) {
+      items.add(const BottomNavigationBarItem(
+        icon: Icon(Icons.event_available_rounded),
+        label: 'Pre-autorizaciones',
+      ));
+    }
+    if (widget.userRole == UserRole.admin) {
+      items.add(const BottomNavigationBarItem(
+        icon: Icon(Icons.block_flipped),
+        label: 'Lista Negra',
+      ));
+    }
+    return items;
+  }
+
+  Widget _buildBody() {
+    if (widget.userRole == UserRole.cliente) {
+      return _buildMonitoreoTab();
+    }
+    if (_currentTabIndex == 0) {
+      return _buildMonitoreoTab();
+    } else if (_currentTabIndex == 1) {
+      if (widget.userRole == UserRole.admin || widget.userRole == UserRole.guardia) {
+        return _buildPreAuthTab();
+      }
+    } else if (_currentTabIndex == 2) {
+      if (widget.userRole == UserRole.admin) {
+        return _buildBlacklistTab();
+      }
+    }
+    return _buildMonitoreoTab();
   }
 
   // --- Monitoreo Tab UI ---
@@ -2358,40 +2437,42 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   ),
                 ],
               ),
-              const SizedBox(height: 16),
-              Row(
-                children: [
-                  Expanded(
-                    child: ElevatedButton.icon(
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: const Color(0xFF10B981).withValues(alpha: 0.15),
-                        foregroundColor: const Color(0xFF10B981),
-                        side: const BorderSide(color: Color(0xFF10B981), width: 1.5),
-                        padding: const EdgeInsets.symmetric(vertical: 14),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              if (widget.userRole != UserRole.cliente) ...[
+                const SizedBox(height: 16),
+                Row(
+                  children: [
+                    Expanded(
+                      child: ElevatedButton.icon(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: const Color(0xFF10B981).withValues(alpha: 0.15),
+                          foregroundColor: const Color(0xFF10B981),
+                          side: const BorderSide(color: Color(0xFF10B981), width: 1.5),
+                          padding: const EdgeInsets.symmetric(vertical: 14),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                        ),
+                        icon: const Icon(Icons.person_add_alt_1_rounded),
+                        label: const Text('Ingreso Persona', style: TextStyle(fontWeight: FontWeight.bold)),
+                        onPressed: () => _showNewEntryModal('persona'),
                       ),
-                      icon: const Icon(Icons.person_add_alt_1_rounded),
-                      label: const Text('Ingreso Persona', style: TextStyle(fontWeight: FontWeight.bold)),
-                      onPressed: () => _showNewEntryModal('persona'),
                     ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: ElevatedButton.icon(
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: const Color(0xFF3B82F6).withValues(alpha: 0.15),
-                        foregroundColor: const Color(0xFF3B82F6),
-                        side: const BorderSide(color: Color(0xFF3B82F6), width: 1.5),
-                        padding: const EdgeInsets.symmetric(vertical: 14),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: ElevatedButton.icon(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: const Color(0xFF3B82F6).withValues(alpha: 0.15),
+                          foregroundColor: const Color(0xFF3B82F6),
+                          side: const BorderSide(color: Color(0xFF3B82F6), width: 1.5),
+                          padding: const EdgeInsets.symmetric(vertical: 14),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                        ),
+                        icon: const Icon(Icons.local_shipping_rounded),
+                        label: const Text('Ingreso Vehículo', style: TextStyle(fontWeight: FontWeight.bold)),
+                        onPressed: () => _showNewEntryModal('vehiculo'),
                       ),
-                      icon: const Icon(Icons.local_shipping_rounded),
-                      label: const Text('Ingreso Vehículo', style: TextStyle(fontWeight: FontWeight.bold)),
-                      onPressed: () => _showNewEntryModal('vehiculo'),
                     ),
-                  ),
-                ],
-              )
+                  ],
+                ),
+              ],
             ],
           ),
         ),
@@ -2912,7 +2993,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 ),
               ),
 
-              if (record.isInside)
+              if (record.isInside && widget.userRole != UserRole.cliente)
                 InkWell(
                   onTap: () => _checkoutRecord(record),
                   child: Container(
@@ -3111,8 +3192,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
               ),
 
               // Button to authorize entry (Mark In)
-              InkWell(
-                onTap: () => _checkinPreAuth(pre),
+              if (widget.userRole != UserRole.cliente)
+                InkWell(
+                  onTap: () => _checkinPreAuth(pre),
                 child: Container(
                   width: 75,
                   decoration: BoxDecoration(
