@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:sentry_flutter/sentry_flutter.dart';
 
 import '../models/access_record.dart';
 import '../models/pre_auth_record.dart';
@@ -153,10 +154,12 @@ class SupabaseSyncManager {
       lastSyncTime.value = DateTime.now();
       final metaBox = Hive.box('sync_metadata_box');
       await metaBox.put('last_sync_time', lastSyncTime.value!.toIso8601String());
-    } catch (e) {
+    } catch (e, stackTrace) {
       debugPrint('Sync Error: $e');
       if (e is SocketException || e.toString().contains('ClientException')) {
         isOnline.value = false;
+      } else {
+        await Sentry.captureException(e, stackTrace: stackTrace);
       }
     } finally {
       isSyncing.value = false;
@@ -261,8 +264,9 @@ class SupabaseSyncManager {
                 _isSyncingDown = false;
               }
             }
-          } catch (storageError) {
+          } catch (storageError, stackTrace) {
             debugPrint('Storage Upload Warning: $storageError');
+            await Sentry.captureException(storageError, stackTrace: stackTrace);
           }
         }
 
