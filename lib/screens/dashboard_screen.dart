@@ -3195,59 +3195,47 @@ class _DashboardScreenState extends State<DashboardScreen> {
       appBar: AppBar(
         backgroundColor: slate800,
         elevation: 0,
-        title: Row(
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
           children: [
-            const Icon(Icons.security, color: Color(0xFF10B981), size: 28),
-            const SizedBox(width: 8),
-            RichText(
-              text: const TextSpan(
-                style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, letterSpacing: 0.5),
-                children: [
-                  TextSpan(text: 'CONTROL ', style: TextStyle(color: Colors.white)),
-                  TextSpan(text: 'ACCESO', style: TextStyle(color: Color(0xFF10B981))),
-                ],
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.security, color: Color(0xFF10B981), size: 22),
+                const SizedBox(width: 6),
+                RichText(
+                  text: const TextSpan(
+                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, letterSpacing: 0.5),
+                    children: [
+                      TextSpan(text: 'CONTROL ', style: TextStyle(color: Colors.white)),
+                      TextSpan(text: 'ACCESO', style: TextStyle(color: Color(0xFF10B981))),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            Padding(
+              padding: const EdgeInsets.only(left: 28),
+              child: Text(
+                widget.userRole == UserRole.admin
+                    ? 'ADMINISTRADOR'
+                    : (widget.userRole == UserRole.guardia ? 'OPERADOR GUARDIA' : 'VISTA CLIENTE'),
+                style: TextStyle(
+                  fontSize: 9,
+                  fontWeight: FontWeight.bold,
+                  letterSpacing: 0.5,
+                  color: widget.userRole == UserRole.admin
+                      ? Colors.redAccent
+                      : (widget.userRole == UserRole.guardia
+                          ? const Color(0xFF10B981)
+                          : Colors.blueAccent),
+                ),
               ),
             ),
           ],
         ),
         actions: [
-          // Role Badge
-          Center(
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-              decoration: BoxDecoration(
-                color: widget.userRole == UserRole.admin
-                    ? Colors.redAccent.withValues(alpha: 0.15)
-                    : (widget.userRole == UserRole.guardia
-                        ? const Color(0xFF10B981).withValues(alpha: 0.15)
-                        : Colors.blueAccent.withValues(alpha: 0.15)),
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(
-                  color: widget.userRole == UserRole.admin
-                      ? Colors.redAccent
-                      : (widget.userRole == UserRole.guardia
-                          ? const Color(0xFF10B981)
-                          : Colors.blueAccent),
-                  width: 1,
-                ),
-              ),
-              child: Text(
-                widget.userRole == UserRole.admin
-                    ? 'ADMIN'
-                    : (widget.userRole == UserRole.guardia ? 'GUARDIA' : 'CLIENTE'),
-                style: TextStyle(
-                  fontSize: 10,
-                  fontWeight: FontWeight.bold,
-                  color: widget.userRole == UserRole.admin
-                      ? Colors.redAccent
-                      : (widget.userRole == UserRole.guardia
-                          ? const Color(0xFF10B981)
-                          : Colors.blueAccent),
-                ),
-              ),
-            ),
-          ),
-          const SizedBox(width: 8),
           // Cloud sync status indicator
           ValueListenableBuilder<bool>(
             valueListenable: SupabaseSyncManager.isOnline,
