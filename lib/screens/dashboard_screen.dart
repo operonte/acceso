@@ -20,6 +20,24 @@ import '../utils/supabase_sync_manager.dart';
 
 import 'login_screen.dart' show UserRole;
 
+class AppNotification {
+  final String id;
+  final String type; // 'alerta', 'info', 'sync'
+  final String title;
+  final String body;
+  final DateTime timestamp;
+  bool isRead;
+
+  AppNotification({
+    required this.id,
+    required this.type,
+    required this.title,
+    required this.body,
+    required this.timestamp,
+    this.isRead = false,
+  });
+}
+
 class DashboardScreen extends StatefulWidget {
   final UserRole userRole;
   const DashboardScreen({super.key, this.userRole = UserRole.guardia});
@@ -61,6 +79,34 @@ class _DashboardScreenState extends State<DashboardScreen> {
   String _blacklistSearchQuery = '';
   final TextEditingController _blacklistSearchController = TextEditingController();
 
+  // --- Notifications State ---
+  final List<AppNotification> _notifications = [];
+  AppNotification? _activeBannerNotification;
+  StreamSubscription? _recordsSubscription;
+
+  void _addNotification({required String type, required String title, required String body}) {
+    final newNotif = AppNotification(
+      id: DateTime.now().millisecondsSinceEpoch.toString(),
+      type: type,
+      title: title,
+      body: body,
+      timestamp: DateTime.now(),
+    );
+    setState(() {
+      _notifications.insert(0, newNotif);
+      _activeBannerNotification = newNotif;
+    });
+
+    // Clear banner after 4 seconds
+    Timer(const Duration(seconds: 4), () {
+      if (mounted && _activeBannerNotification == newNotif) {
+        setState(() {
+          _activeBannerNotification = null;
+        });
+      }
+    });
+  }
+
   @override
   void initState() {
     super.initState();
@@ -74,11 +120,50 @@ class _DashboardScreenState extends State<DashboardScreen> {
         });
       }
     });
+
+    // Hive Box listener for real-time notifications and lists refresh
+    _recordsSubscription = _recordsBox.watch().listen((event) {
+      if (mounted) {
+        _refreshUILists();
+        
+        if (!event.deleted && event.value != null) {
+          final map = event.value as Map;
+          final name = map['name'] as String? ?? 'Desconocido';
+          final type = map['type'] as String? ?? 'persona';
+          final isInside = map['isInside'] as bool? ?? true;
+          final destination = map['destination'] as String? ?? '';
+          
+          if (isInside) {
+            // Check if it was blacklisted entry allowed
+            if (destination.contains('[Excepción Lista Negra]')) {
+              _addNotification(
+                type: 'alerta',
+                title: '⚠️ Excepción de Lista Negra',
+                body: '$name ingresó a $destination',
+              );
+            } else {
+              _addNotification(
+                type: 'sync',
+                title: type == 'persona' ? 'Ingreso Registrado' : 'Vehículo Registrado',
+                body: '$name ingresó a $destination',
+              );
+            }
+          } else {
+            _addNotification(
+              type: 'info',
+              title: 'Salida Registrada',
+              body: 'Salida de $name registrada.',
+            );
+          }
+        }
+      }
+    });
   }
 
   @override
   void dispose() {
     _timer.cancel();
+    _recordsSubscription?.cancel();
     _searchController.dispose();
     _preAuthSearchController.dispose();
     _blacklistSearchController.dispose();
@@ -2455,6 +2540,206 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
+  void _showNotificationsModal() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: slate800,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setModalState) {
+            return Padding(
+              padding: const EdgeInsets.all(20.0),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Row(
+                        children: [
+                          const Icon(Icons.notifications_rounded, color: Colors.blueAccent),
+                          const SizedBox(width: 8),
+                          Text(
+                            'Centro de Notificaciones',
+                            style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                              fontWeight: FontWeight.bold,
+                              color: Colors.white,
+                            ),
+                          ),
+                        ],
+                      ),
+                      TextButton(
+                        onPressed: () {
+                          setState(() {
+                            for (var n in _notifications) {
+                              n.isRead = true;
+                            }
+                          });
+                          setModalState(() {});
+                        },
+                        child: const Text('Marcar leído', style: TextStyle(color: Colors.blueAccent)),
+                      ),
+                    ],
+                  ),
+                  const Divider(color: slate700, height: 20),
+                  ConstrainedBox(
+                    constraints: BoxConstraints(
+                      maxHeight: MediaQuery.of(context).size.height * 0.4,
+                    ),
+                    child: _notifications.isEmpty
+                        ? const Center(
+                            child: Padding(
+                              padding: EdgeInsets.symmetric(vertical: 40.0),
+                              child: Text(
+                                'No hay notificaciones recientes',
+                                style: TextStyle(color: slate400),
+                              ),
+                            ),
+                          )
+                        : ListView.separated(
+                            shrinkWrap: true,
+                            itemCount: _notifications.length,
+                            separatorBuilder: (context, index) => const Divider(color: slate800),
+                            itemBuilder: (context, index) {
+                              final notif = _notifications[index];
+                              final isAlert = notif.type == 'alerta';
+                              final isSync = notif.type == 'sync';
+                              
+                              Color iconColor = Colors.blueAccent;
+                              IconData iconData = Icons.info_outline;
+                              if (isAlert) {
+                                iconColor = Colors.redAccent;
+                                iconData = Icons.warning_amber_rounded;
+                              } else if (isSync) {
+                                iconColor = const Color(0xFF10B981);
+                                iconData = Icons.sync_rounded;
+                              }
+
+                              return Container(
+                                decoration: BoxDecoration(
+                                  color: notif.isRead ? Colors.transparent : slate900.withValues(alpha: 0.5),
+                                  borderRadius: BorderRadius.circular(10),
+                                ),
+                                child: ListTile(
+                                  leading: CircleAvatar(
+                                    backgroundColor: iconColor.withValues(alpha: 0.15),
+                                    child: Icon(iconData, color: iconColor),
+                                  ),
+                                  title: Text(
+                                    notif.title,
+                                    style: TextStyle(
+                                      fontWeight: notif.isRead ? FontWeight.normal : FontWeight.bold,
+                                      color: Colors.white,
+                                      fontSize: 14,
+                                    ),
+                                  ),
+                                  subtitle: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      const SizedBox(height: 4),
+                                      Text(
+                                        notif.body,
+                                        style: const TextStyle(color: slate400, fontSize: 12),
+                                      ),
+                                      const SizedBox(height: 4),
+                                      Text(
+                                        '${notif.timestamp.hour.toString().padLeft(2, '0')}:${notif.timestamp.minute.toString().padLeft(2, '0')}',
+                                        style: const TextStyle(color: slate500, fontSize: 10),
+                                      ),
+                                    ],
+                                  ),
+                                  onTap: () {
+                                    setState(() {
+                                      notif.isRead = true;
+                                    });
+                                    setModalState(() {});
+                                  },
+                                ),
+                              );
+                            },
+                          ),
+                  ),
+                ],
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Widget _buildTopBanner() {
+    if (_activeBannerNotification == null) return const SizedBox.shrink();
+    final isAlert = _activeBannerNotification!.type == 'alerta';
+    return Positioned(
+      top: MediaQuery.of(context).padding.top + 12,
+      left: 16,
+      right: 16,
+      child: Material(
+        color: Colors.transparent,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+          decoration: BoxDecoration(
+            color: isAlert ? const Color(0xFFEF4444) : slate900,
+            borderRadius: BorderRadius.circular(12),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.3),
+                blurRadius: 10,
+                offset: const Offset(0, 4),
+              )
+            ],
+            border: Border.all(
+              color: isAlert ? Colors.redAccent : slate700,
+              width: 1,
+            ),
+          ),
+          child: Row(
+            children: [
+              Icon(
+                isAlert ? Icons.warning_amber_rounded : Icons.notifications_active_rounded,
+                color: Colors.white,
+                size: 24,
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      _activeBannerNotification!.title,
+                      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      _activeBannerNotification!.body,
+                      style: const TextStyle(color: Colors.white70, fontSize: 12),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
+                ),
+              ),
+              IconButton(
+                icon: const Icon(Icons.close, color: Colors.white70, size: 18),
+                onPressed: () {
+                  setState(() {
+                    _activeBannerNotification = null;
+                  });
+                },
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   // --- Rendering UI Tabs ---
 
   @override
@@ -2554,6 +2839,35 @@ class _DashboardScreenState extends State<DashboardScreen> {
             },
           ),
           const SizedBox(width: 8),
+
+          Stack(
+            alignment: Alignment.center,
+            children: [
+              IconButton(
+                tooltip: 'Notificaciones',
+                icon: const Icon(Icons.notifications_rounded, color: Colors.white),
+                onPressed: _showNotificationsModal,
+              ),
+              if (_notifications.any((n) => !n.isRead))
+                Positioned(
+                  top: 10,
+                  right: 10,
+                  child: Container(
+                    padding: const EdgeInsets.all(2),
+                    decoration: const BoxDecoration(
+                      color: Colors.red,
+                      shape: BoxShape.circle,
+                    ),
+                    constraints: const BoxConstraints(
+                      minWidth: 8,
+                      minHeight: 8,
+                    ),
+                  ),
+                ),
+            ],
+          ),
+          const SizedBox(width: 8),
+
           // Live Clock widget
           Container(
             margin: const EdgeInsets.only(right: 8),
@@ -2585,7 +2899,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
       ),
 
       // --- Body switching tabs ---
-      body: _buildBody(),
+      body: Stack(
+        children: [
+          _buildBody(),
+          _buildTopBanner(),
+        ],
+      ),
 
       // --- QR Floating Action Button ---
       floatingActionButton: widget.userRole == UserRole.cliente
