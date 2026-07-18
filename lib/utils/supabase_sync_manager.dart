@@ -216,6 +216,40 @@ class SupabaseSyncManager {
       final localData = _recordsBox.get(id);
       if (localData != null) {
         final record = AccessRecord.fromMap(localData);
+        
+        // Handle background photo upload if path is local
+        if (record.photoPath != null && !record.photoPath!.startsWith('http')) {
+          try {
+            final file = File(record.photoPath!);
+            if (await file.exists()) {
+              final fileBytes = await file.readAsBytes();
+              final fileName = '${record.id}.jpg';
+              
+              await client.storage.from('visitor_photos').uploadBinary(
+                fileName,
+                fileBytes,
+                fileOptions: const FileOptions(contentType: 'image/jpeg', upsert: true),
+              );
+              
+              final publicUrl = client.storage.from('visitor_photos').getPublicUrl(fileName);
+              record.photoPath = publicUrl;
+              
+              // Prevent triggering box listener loop by saving silently or checking in listener
+              // Since recordsBox listener does not queue if _isSyncingDown is true, but we are inside syncAll() which sets isSyncing, but wait!
+              // The listener check is: if (_isSyncingDown) return;
+              // To be safe, we temporarily set _isSyncingDown to true while writing the public URL update.
+              _isSyncingDown = true;
+              try {
+                await _recordsBox.put(record.id, record.toMap());
+              } finally {
+                _isSyncingDown = false;
+              }
+            }
+          } catch (storageError) {
+            debugPrint('Storage Upload Warning: $storageError');
+          }
+        }
+
         await client.from('access_records').upsert(_toSupabaseAccessRecord(record));
       }
       await _pendingRecordsBox.delete(id);
@@ -252,6 +286,7 @@ class SupabaseSyncManager {
       'entry_time': r.entryTime.toIso8601String(),
       'exit_time': r.exitTime?.toIso8601String(),
       'is_inside': r.isInside,
+      'photo_path': r.photoPath,
     };
   }
 
@@ -267,6 +302,7 @@ class SupabaseSyncManager {
       entryTime: DateTime.parse(map['entry_time'] as String),
       exitTime: map['exit_time'] != null ? DateTime.parse(map['exit_time'] as String) : null,
       isInside: map['is_inside'] as bool,
+      photoPath: map['photo_path'] as String?,
     );
   }
 
