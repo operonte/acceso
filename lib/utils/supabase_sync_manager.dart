@@ -45,6 +45,11 @@ class SupabaseSyncManager {
       lastSyncTime.value = DateTime.parse(lastSyncString);
     }
 
+    // Pre-populate mock entries if boxes are empty
+    if (_recordsBox.isEmpty && _preAuthBox.isEmpty && _blacklistBox.isEmpty) {
+      await _prepopulateMockData();
+    }
+
     _isInitialized = true;
 
     // Listen to local Box changes to automatically queue them for syncing
@@ -313,5 +318,55 @@ class SupabaseSyncManager {
       reason: map['reason'] as String,
       createdAt: DateTime.parse(map['created_at'] as String),
     );
+  }
+
+  static Future<void> _prepopulateMockData() async {
+    // 1. Mock Pre-Auth Records
+    final pre1 = PreAuthRecord(
+      id: 'pre-1',
+      type: 'persona',
+      name: 'Juan Pérez',
+      docId: '12.345.678-9',
+      destination: 'Oficina 402',
+      visitDate: DateTime.now(),
+      isUsed: false,
+    );
+    final pre2 = PreAuthRecord(
+      id: 'pre-2',
+      type: 'vehiculo',
+      name: 'María Gómez',
+      docId: '9.876.543-2',
+      plate: 'ABCD12',
+      vehicleType: 'Toyota Yaris, Gris',
+      destination: 'Depto 105',
+      visitDate: DateTime.now(),
+      isUsed: false,
+    );
+    await _preAuthBox.put(pre1.id, pre1.toMap());
+    await _preAuthBox.put(pre2.id, pre2.toMap());
+
+    // 2. Mock Blacklist Entries
+    final bl1 = BlacklistEntry(
+      id: 'bl-1',
+      type: 'persona',
+      name: 'Pedro Rojas',
+      identifier: '11.111.111-1',
+      reason: 'Antecedentes de altercado con personal de portería.',
+      createdAt: DateTime.now().subtract(const Duration(days: 30)),
+    );
+    await _blacklistBox.put(bl1.id, bl1.toMap());
+
+    // 3. Mock Access Records (History)
+    final rec1 = AccessRecord(
+      id: 'rec-1',
+      type: 'persona',
+      name: 'Carlos Muñoz',
+      docId: '15.555.555-5',
+      destination: 'Bodega Central',
+      entryTime: DateTime.now().subtract(const Duration(days: 2, hours: 3)),
+      exitTime: DateTime.now().subtract(const Duration(days: 2, hours: 1)),
+      isInside: false,
+    );
+    await _recordsBox.put(rec1.id, rec1.toMap());
   }
 }
