@@ -1591,12 +1591,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   void _showNewEntryModal(String type, {String? prefilledDocId, String? prefilledPlate}) {
     final formKey = GlobalKey<FormState>();
-    String name = '';
-    String docId = prefilledDocId ?? '';
-    String plate = prefilledPlate ?? '';
+    final TextEditingController nameController = TextEditingController();
+    final TextEditingController docIdController = TextEditingController(text: prefilledDocId ?? '');
+    final TextEditingController plateController = TextEditingController(text: prefilledPlate ?? '');
+    final TextEditingController destinationController = TextEditingController();
+    
     String vehicleType = 'Auto';
-    String destination = '';
     bool isRut = prefilledDocId == null || prefilledDocId.isEmpty || RegExp(r'^[0-9kK\.\-]+$').hasMatch(prefilledDocId);
+    
+    List<Map<String, String>> suggestions = [];
+    String suggestionsType = 'doc'; // 'doc' or 'plate'
 
     showModalBottomSheet(
       context: context,
@@ -1608,6 +1612,151 @@ class _DashboardScreenState extends State<DashboardScreen> {
       builder: (BuildContext context) {
         return StatefulBuilder(
           builder: (BuildContext context, StateSetter setModalState) {
+            
+            void updateDocIdSuggestions(String query) {
+              if (query.length < 3) {
+                setModalState(() {
+                  suggestions = [];
+                });
+                return;
+              }
+              final cleanQuery = query.replaceAll(RegExp(r'[^0-9kK]'), '');
+              final List<Map<String, String>> matches = [];
+              
+              // 1. Search Pre-authorizations first
+              for (final pre in _preAuths) {
+                final cleanDoc = pre.docId.replaceAll(RegExp(r'[^0-9kK]'), '');
+                if (cleanDoc.contains(cleanQuery) && pre.type == type) {
+                  matches.add({
+                    'source': 'preauth',
+                    'name': pre.name,
+                    'docId': pre.docId,
+                    'plate': pre.plate ?? '',
+                    'vehicleType': pre.vehicleType ?? 'Auto',
+                    'destination': pre.destination,
+                  });
+                }
+              }
+              
+              // 2. Search Access History
+              for (final rec in _records) {
+                final cleanDoc = rec.docId.replaceAll(RegExp(r'[^0-9kK]'), '');
+                if (cleanDoc.contains(cleanQuery) && rec.type == type) {
+                  if (!matches.any((m) => m['docId'] == rec.docId)) {
+                    matches.add({
+                      'source': 'history',
+                      'name': rec.name,
+                      'docId': rec.docId,
+                      'plate': rec.plate ?? '',
+                      'vehicleType': rec.vehicleType ?? 'Auto',
+                      'destination': rec.destination,
+                    });
+                  }
+                }
+              }
+
+              setModalState(() {
+                suggestionsType = 'doc';
+                suggestions = matches.take(3).toList();
+              });
+            }
+
+            void updatePlateSuggestions(String query) {
+              if (query.length < 2) {
+                setModalState(() {
+                  suggestions = [];
+                });
+                return;
+              }
+              final cleanQuery = query.toUpperCase().replaceAll(RegExp(r'[^A-Z0-9]'), '');
+              final List<Map<String, String>> matches = [];
+              
+              // 1. Search Pre-authorizations
+              for (final pre in _preAuths) {
+                if (pre.plate != null && pre.type == 'vehiculo') {
+                  final cleanPlate = pre.plate!.toUpperCase().replaceAll(RegExp(r'[^A-Z0-9]'), '');
+                  if (cleanPlate.contains(cleanQuery)) {
+                    matches.add({
+                      'source': 'preauth',
+                      'name': pre.name,
+                      'docId': pre.docId,
+                      'plate': pre.plate!,
+                      'vehicleType': pre.vehicleType ?? 'Auto',
+                      'destination': pre.destination,
+                    });
+                  }
+                }
+              }
+              
+              // 2. Search Access History
+              for (final rec in _records) {
+                if (rec.plate != null && rec.type == 'vehiculo') {
+                  final cleanPlate = rec.plate!.toUpperCase().replaceAll(RegExp(r'[^A-Z0-9]'), '');
+                  if (cleanPlate.contains(cleanQuery)) {
+                    if (!matches.any((m) => m['plate'] == rec.plate)) {
+                      matches.add({
+                        'source': 'history',
+                        'name': rec.name,
+                        'docId': rec.docId,
+                        'plate': rec.plate!,
+                        'vehicleType': rec.vehicleType ?? 'Auto',
+                        'destination': rec.destination,
+                      });
+                    }
+                  }
+                }
+              }
+
+              setModalState(() {
+                suggestionsType = 'plate';
+                suggestions = matches.take(3).toList();
+              });
+            }
+
+            void applySuggestion(Map<String, String> item) {
+              setModalState(() {
+                nameController.text = item['name']!;
+                docIdController.text = item['docId']!;
+                plateController.text = item['plate']!;
+                destinationController.text = item['destination']!;
+                vehicleType = item['vehicleType'] ?? 'Auto';
+                suggestions = [];
+              });
+            }
+
+            Widget suggestionsWidget() {
+              return Container(
+                margin: const EdgeInsets.only(top: 4, bottom: 8),
+                decoration: BoxDecoration(
+                  color: slate900,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: slate700),
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: suggestions.map((item) {
+                    final isPreauth = item['source'] == 'preauth';
+                    return ListTile(
+                      dense: true,
+                      leading: Icon(
+                        isPreauth ? Icons.event_available_rounded : Icons.history_rounded,
+                        color: isPreauth ? Colors.amber : slate400,
+                      ),
+                      title: Text(
+                        '${item['name']} (${item['docId']})',
+                        style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                      ),
+                      subtitle: Text(
+                        'Destino: ${item['destination']}${item['plate']!.isNotEmpty ? ' | Patente: ${item['plate']}' : ''}',
+                        style: const TextStyle(color: slate400),
+                      ),
+                      onTap: () => applySuggestion(item),
+                    );
+                  }).toList(),
+                ),
+              );
+            }
+
             return Padding(
               padding: EdgeInsets.only(
                 bottom: MediaQuery.of(context).viewInsets.bottom + 24,
@@ -1644,6 +1793,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       const Divider(height: 24, color: slate700),
 
                       TextFormField(
+                        controller: nameController,
                         decoration: InputDecoration(
                           labelText: type == 'persona' ? 'Nombre de la Persona' : 'Nombre del Conductor',
                           prefixIcon: const Icon(Icons.person),
@@ -1652,7 +1802,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           fillColor: slate900,
                         ),
                         validator: (value) => value == null || value.trim().isEmpty ? 'Ingrese un nombre válido' : null,
-                        onSaved: (value) => name = value!.trim(),
                       ),
                       const SizedBox(height: 16),
 
@@ -1690,7 +1839,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
                       TextFormField(
                         key: ValueKey('entry_doc_field_$isRut'),
-                        initialValue: docId,
+                        controller: docIdController,
                         decoration: InputDecoration(
                           labelText: isRut ? 'RUT (Ej: 12.345.678-9)' : 'Identificación (DNI o Pasaporte)',
                           prefixIcon: const Icon(Icons.badge),
@@ -1699,6 +1848,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           fillColor: slate900,
                         ),
                         inputFormatters: isRut ? [RutFormatter()] : null,
+                        onChanged: updateDocIdSuggestions,
                         validator: (value) {
                           if (value == null || value.trim().isEmpty) {
                             return 'Ingrese identificación';
@@ -1708,8 +1858,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           }
                           return null;
                         },
-                        onSaved: (value) => docId = value!.trim(),
                       ),
+                      
+                      if (suggestions.isNotEmpty && suggestionsType == 'doc')
+                        suggestionsWidget(),
+                      
                       const SizedBox(height: 16),
 
                       if (type == 'vehiculo') ...[
@@ -1719,7 +1872,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                               flex: 2,
                               child: TextFormField(
                                 textCapitalization: TextCapitalization.characters,
-                                initialValue: plate,
+                                controller: plateController,
                                 decoration: InputDecoration(
                                   labelText: 'Patente / Placa',
                                   prefixIcon: const Icon(Icons.tag),
@@ -1728,6 +1881,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                   fillColor: slate900,
                                 ),
                                 inputFormatters: [PlateFormatter()],
+                                onChanged: updatePlateSuggestions,
                                 validator: (value) {
                                   if (value == null || value.trim().isEmpty) {
                                     return 'Ingrese patente';
@@ -1737,7 +1891,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                   }
                                   return null;
                                 },
-                                onSaved: (value) => plate = value!.trim().toUpperCase(),
                               ),
                             ),
                             const SizedBox(width: 12),
@@ -1765,10 +1918,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
                             ),
                           ],
                         ),
+                        
+                        if (suggestions.isNotEmpty && suggestionsType == 'plate')
+                          suggestionsWidget(),
+
                         const SizedBox(height: 16),
                       ],
 
                       TextFormField(
+                        controller: destinationController,
                         decoration: InputDecoration(
                           labelText: 'Destino / Motivo de Visita',
                           prefixIcon: const Icon(Icons.meeting_room),
@@ -1777,7 +1935,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           fillColor: slate900,
                         ),
                         validator: (value) => value == null || value.trim().isEmpty ? 'Ingrese destino' : null,
-                        onSaved: (value) => destination = value!.trim(),
                       ),
                       const SizedBox(height: 24),
 
@@ -1789,7 +1946,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         ),
                         onPressed: () async {
                           if (formKey.currentState!.validate()) {
-                            formKey.currentState!.save();
+                            final name = nameController.text.trim();
+                            final docId = docIdController.text.trim();
+                            final plate = plateController.text.trim().toUpperCase();
+                            final destination = destinationController.text.trim();
                             
                             // Check blacklist first!
                             final blacklistMatch = _checkBlacklist(docId, type == 'vehiculo' ? plate : null);
