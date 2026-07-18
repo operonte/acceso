@@ -45,6 +45,8 @@ dependencies:
   mobile_scanner: ^7.3.0
   supabase_flutter: ^2.8.0
   image_picker: ^1.2.3
+  file_picker: ^8.1.4
+  csv: ^8.0.0
 
 dev_dependencies:
   flutter_test:
