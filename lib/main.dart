@@ -4,6 +4,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'screens/dashboard_screen.dart';
 import 'theme/colors.dart';
 import 'utils/supabase_sync_manager.dart';
+import 'screens/login_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -52,7 +53,14 @@ class MyApp extends StatelessWidget {
           surface: slate800,
         ),
       ),
-      home: const DashboardScreen(),
+      initialRoute: '/',
+      routes: {
+        '/': (context) => const LoginScreen(),
+        '/dashboard': (context) {
+          final role = ModalRoute.of(context)!.settings.arguments as UserRole;
+          return DashboardScreen(userRole: role);
+        },
+      },
     );
   }
 }
