@@ -68,6 +68,22 @@ class SupabaseSyncManager {
       queueBlacklist(event.key as String);
     });
 
+    // Subscribe to Supabase Realtime changes
+    try {
+      client.channel('realtime_access_records')
+        .onPostgresChanges(
+          event: PostgresChangeEvent.all,
+          schema: 'public',
+          table: 'access_records',
+          callback: (payload) {
+            syncAll();
+          },
+        )
+        .subscribe();
+    } catch (e) {
+      debugPrint('Realtime Subscription Error: $e');
+    }
+
     // Start periodic sync every 30 seconds
     _syncTimer = Timer.periodic(const Duration(seconds: 30), (timer) {
       syncAll();
