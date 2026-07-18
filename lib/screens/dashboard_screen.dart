@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:qr_flutter/qr_flutter.dart';
+import 'package:image_picker/image_picker.dart';
 
 import '../models/access_record.dart';
 import '../models/pre_auth_record.dart';
@@ -1601,6 +1602,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     
     List<Map<String, String>> suggestions = [];
     String suggestionsType = 'doc'; // 'doc' or 'plate'
+    String? localPhotoPath;
 
     showModalBottomSheet(
       context: context,
@@ -1936,6 +1938,97 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         ),
                         validator: (value) => value == null || value.trim().isEmpty ? 'Ingrese destino' : null,
                       ),
+                      const SizedBox(height: 16),
+
+                      // Registro Fotográfico
+                      const Text(
+                        'Registro Fotográfico (Opcional)',
+                        style: TextStyle(color: slate400, fontSize: 13, fontWeight: FontWeight.bold),
+                      ),
+                      const SizedBox(height: 8),
+                      localPhotoPath == null
+                          ? InkWell(
+                              onTap: () async {
+                                try {
+                                  final picker = ImagePicker();
+                                  final image = await picker.pickImage(
+                                    source: ImageSource.camera,
+                                    imageQuality: 70,
+                                  );
+                                  if (image != null) {
+                                    setModalState(() {
+                                      localPhotoPath = image.path;
+                                    });
+                                  }
+                                } catch (e) {
+                                  if (context.mounted) {
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      SnackBar(
+                                        content: Text('Error al abrir cámara: $e'),
+                                        backgroundColor: Colors.red,
+                                      ),
+                                    );
+                                  }
+                                }
+                              },
+                              child: Container(
+                                height: 80,
+                                decoration: BoxDecoration(
+                                  color: slate900,
+                                  borderRadius: BorderRadius.circular(12),
+                                  border: Border.all(color: slate700),
+                                ),
+                                child: const Row(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    Icon(Icons.camera_alt_rounded, color: slate400, size: 24),
+                                    SizedBox(width: 8),
+                                    Text(
+                                      'Capturar Fotografía',
+                                      style: TextStyle(color: slate400, fontSize: 13),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            )
+                          : Stack(
+                              children: [
+                                Container(
+                                  height: 140,
+                                  width: double.infinity,
+                                  decoration: BoxDecoration(
+                                    borderRadius: BorderRadius.circular(12),
+                                    image: DecorationImage(
+                                      image: FileImage(File(localPhotoPath!)),
+                                      fit: BoxFit.cover,
+                                    ),
+                                  ),
+                                ),
+                                Positioned(
+                                  top: 8,
+                                  right: 8,
+                                  child: GestureDetector(
+                                    onTap: () {
+                                      setModalState(() {
+                                        localPhotoPath = null;
+                                      });
+                                    },
+                                    child: Container(
+                                      decoration: const BoxDecoration(
+                                        color: Colors.red,
+                                        shape: BoxShape.circle,
+                                      ),
+                                      padding: const EdgeInsets.all(4),
+                                      child: const Icon(
+                                        Icons.close,
+                                        color: Colors.white,
+                                        size: 16,
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
                       const SizedBox(height: 24),
 
                       ElevatedButton(
@@ -2016,6 +2109,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                               vehicleType: type == 'vehiculo' ? vehicleType : null,
                               destination: hasBlacklistException ? '$destination [Excepción Lista Negra]' : destination,
                               entryTime: DateTime.now(),
+                              photoPath: localPhotoPath,
                             );
                             
                             await _recordsBox.put(newRecord.id, newRecord.toMap());
@@ -3006,6 +3100,47 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
+  void _showPhotoDialog(String photoPath) {
+    showDialog(
+      context: context,
+      builder: (context) => Dialog(
+        backgroundColor: Colors.transparent,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ClipRRect(
+              borderRadius: BorderRadius.circular(16),
+              child: photoPath.startsWith('http')
+                  ? Image.network(
+                      photoPath,
+                      fit: BoxFit.contain,
+                      errorBuilder: (context, error, stackTrace) => Container(
+                        padding: const EdgeInsets.all(24),
+                        color: slate800,
+                        child: const Icon(Icons.broken_image, color: slate400, size: 48),
+                      ),
+                    )
+                  : Image.file(
+                      File(photoPath),
+                      fit: BoxFit.contain,
+                      errorBuilder: (context, error, stackTrace) => Container(
+                        padding: const EdgeInsets.all(24),
+                        color: slate800,
+                        child: const Icon(Icons.broken_image, color: slate400, size: 48),
+                      ),
+                    ),
+            ),
+            const SizedBox(height: 12),
+            IconButton(
+              icon: const Icon(Icons.close, color: Colors.white, size: 30),
+              onPressed: () => Navigator.pop(context),
+            )
+          ],
+        ),
+      ),
+    );
+  }
+
   // Access log card render
   Widget _buildRecordCard(AccessRecord record) {
     final isVehicle = record.type == 'vehiculo';
@@ -3152,6 +3287,34 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   ),
                 ),
               ),
+
+              if (record.photoPath != null)
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                  child: Center(
+                    child: InkWell(
+                      onTap: () => _showPhotoDialog(record.photoPath!),
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(8),
+                        child: record.photoPath!.startsWith('http')
+                            ? Image.network(
+                                record.photoPath!,
+                                width: 44,
+                                height: 44,
+                                fit: BoxFit.cover,
+                                errorBuilder: (context, error, stackTrace) => const Icon(Icons.broken_image, color: slate400, size: 20),
+                              )
+                            : Image.file(
+                                File(record.photoPath!),
+                                width: 44,
+                                height: 44,
+                                fit: BoxFit.cover,
+                                errorBuilder: (context, error, stackTrace) => const Icon(Icons.broken_image, color: slate400, size: 20),
+                              ),
+                      ),
+                    ),
+                  ),
+                ),
 
               if (record.isInside && widget.userRole != UserRole.cliente)
                 InkWell(

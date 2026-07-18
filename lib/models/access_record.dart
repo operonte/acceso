@@ -9,6 +9,7 @@ class AccessRecord {
   final DateTime entryTime;
   DateTime? exitTime;
   bool isInside;
+  String? photoPath;
 
   AccessRecord({
     required this.id,
@@ -21,6 +22,7 @@ class AccessRecord {
     required this.entryTime,
     this.exitTime,
     this.isInside = true,
+    this.photoPath,
   });
 
   Map<String, dynamic> toMap() {
@@ -35,6 +37,7 @@ class AccessRecord {
       'entryTime': entryTime.toIso8601String(),
       'exitTime': exitTime?.toIso8601String(),
       'isInside': isInside,
+      'photoPath': photoPath,
     };
   }
 
@@ -50,6 +53,7 @@ class AccessRecord {
       entryTime: DateTime.parse(map['entryTime'] as String),
       exitTime: map['exitTime'] != null ? DateTime.parse(map['exitTime'] as String) : null,
       isInside: map['isInside'] as bool,
+      photoPath: map['photoPath'] as String?,
     );
   }
 }
