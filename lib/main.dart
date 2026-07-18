@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:sentry_flutter/sentry_flutter.dart';
 import 'screens/dashboard_screen.dart';
 import 'theme/colors.dart';
 import 'utils/supabase_sync_manager.dart';
@@ -27,7 +28,15 @@ void main() async {
   // Initialize Supabase Synchronization
   await SupabaseSyncManager.initialize();
   
-  runApp(const MyApp());
+  // Initialize Sentry for real-time error tracking
+  await SentryFlutter.init(
+    (options) {
+      options.dsn = 'https://a1b2c3d4e5f6g7h8i9j0@o0.ingest.sentry.io/placeholder';
+      options.tracesSampleRate = 1.0;
+      options.attachScreenshot = true;
+    },
+    appRunner: () => runApp(const MyApp()),
+  );
 }
 
 class MyApp extends StatelessWidget {
