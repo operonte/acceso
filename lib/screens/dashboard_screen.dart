@@ -63,8 +63,9 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
   AppNotification? get _activeBannerNotification => ref.read(dashboardProvider).activeBannerNotification;
 
   // --- Monitoreo View Parameters ---
-  String _selectedView = 'dentro'; // 'dentro' or 'salieron' or 'historial'
-  String _sortOption = 'hora_desc';
+  String _selectedView = 'dentro'; // 'dentro' or 'salieron'
+  String _sortOption = 'hora_desc'; // 'hora_desc' or 'az'
+  String? _selectedAdminInstallation;
   String _filterType = 'todos'; // 'todos', 'personas', 'vehiculos'
   String _searchQuery = '';
   final TextEditingController _searchController = TextEditingController();
@@ -169,9 +170,10 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
   }
 
   List<AccessRecord> get _filteredRecords {
+    final targetInstallation = _selectedAdminInstallation ?? widget.installationName;
     return _records.where((record) {
-      if (widget.installationName != null) {
-        if (!record.destination.startsWith('${widget.installationName} | ')) {
+      if (targetInstallation != null) {
+        if (!record.destination.startsWith('$targetInstallation | ')) {
           return false;
         }
       }
@@ -207,7 +209,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
         return false;
       }
 
-      if (_selectedView == 'historial' && _selectedDateRange != null) {
+      if (_selectedDateRange != null) {
         final start = DateTime(_selectedDateRange!.start.year, _selectedDateRange!.start.month, _selectedDateRange!.start.day);
         final end = DateTime(_selectedDateRange!.end.year, _selectedDateRange!.end.month, _selectedDateRange!.end.day, 23, 59, 59, 999);
         final recordLocalTime = record.entryTime.toLocal();
@@ -227,14 +229,8 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
       return true;
     }).toList()
       ..sort((a, b) {
-        if (_sortOption == 'hora_desc') {
-          return b.entryTime.compareTo(a.entryTime);
-        } else if (_sortOption == 'hora_asc') {
-          return a.entryTime.compareTo(b.entryTime);
-        } else if (_sortOption == 'az') {
+        if (_sortOption == 'az') {
           return a.name.toLowerCase().compareTo(b.name.toLowerCase());
-        } else if (_sortOption == 'za') {
-          return b.name.toLowerCase().compareTo(a.name.toLowerCase());
         }
         return b.entryTime.compareTo(a.entryTime);
       });
@@ -853,33 +849,36 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
   }
 
   Future<void> _selectDateRange() async {
-    final DateTimeRange? picked = await showDateRangePicker(
-      context: context,
-      initialDateRange: _selectedDateRange,
-      firstDate: DateTime(2020),
-      lastDate: DateTime.now().add(const Duration(days: 365)),
-      locale: const Locale('es', 'ES'),
-      builder: (context, child) {
-        return Theme(
-          data: Theme.of(context).copyWith(
-            colorScheme: const ColorScheme.dark(
-              primary: Color(0xFF10B981),
-              onPrimary: Colors.white,
-              surface: slate800,
-              onSurface: Colors.white,
+    try {
+      final DateTimeRange? picked = await showDateRangePicker(
+        context: context,
+        initialDateRange: _selectedDateRange,
+        firstDate: DateTime(2020),
+        lastDate: DateTime.now().add(const Duration(days: 365)),
+        builder: (context, child) {
+          return Theme(
+            data: Theme.of(context).copyWith(
+              colorScheme: const ColorScheme.dark(
+                primary: Color(0xFF10B981),
+                onPrimary: Colors.white,
+                surface: slate800,
+                onSurface: Colors.white,
+              ),
+              dialogTheme: const DialogThemeData(
+                backgroundColor: slate900,
+              ),
             ),
-            dialogTheme: const DialogThemeData(
-              backgroundColor: slate900,
-            ),
-          ),
-          child: child!,
-        );
-      },
-    );
-    if (picked != null && picked != _selectedDateRange) {
-      setState(() {
-        _selectedDateRange = picked;
-      });
+            child: child ?? const SizedBox(),
+          );
+        },
+      );
+      if (picked != null) {
+        setState(() {
+          _selectedDateRange = picked;
+        });
+      }
+    } catch (e) {
+      debugPrint('Error en date range picker: $e');
     }
   }
 
@@ -1306,12 +1305,11 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
               
               // Option 1: Pre-authorized visitor
               _buildSimulateButton(
-                title: 'Diana Silva (Visita Pre-autorizada)',
-                subtitle: 'Peatón - Destino: Bodega A',
+                title: 'Visita Pre-autorizada (Simulación QR)',
+                subtitle: 'Peatón - Destino: Registro de Prueba',
                 color: const Color(0xFF10B981),
                 onTap: () {
                   Navigator.pop(context);
-                  // Look for preauth p1
                   final pre = _preAuths.firstWhere((p) => p.id == 'p1', orElse: () => _preAuths[0]);
                   _triggerSimulatedScan(pre.name, () => _checkinPreAuth(pre));
                 },
@@ -1320,8 +1318,8 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
 
               // Option 2: Pre-authorized vehicle
               _buildSimulateButton(
-                title: 'Camioneta Juan Pérez (Vehículo Pre-autorizado)',
-                subtitle: 'Patente: XX-YY-12',
+                title: 'Vehículo Pre-autorizado (Simulación QR)',
+                subtitle: 'Vehículo - Registro de Prueba',
                 color: const Color(0xFF3B82F6),
                 onTap: () {
                   Navigator.pop(context);
@@ -1333,8 +1331,8 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
 
               // Option 3: Guest without pre-authorization
               _buildSimulateButton(
-                title: 'Héctor Soto (Peatón Imprevisto)',
-                subtitle: 'RUT: 19.332.114-K - Destino: Taller',
+                title: 'Peatón Imprevisto (Simulación QR)',
+                subtitle: 'Registro de Prueba de Ingreso Directo',
                 color: Colors.amber,
                 onTap: () {
                   Navigator.pop(context);
@@ -3971,6 +3969,42 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
             ],
           ),
         ),
+        // Active Installation Filter Banner for Admin
+        if (_selectedAdminInstallation != null)
+          Container(
+            color: const Color(0xFF10B981).withValues(alpha: 0.15),
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            child: Row(
+              children: [
+                const Icon(Icons.business_rounded, color: Color(0xFF10B981), size: 18),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'Instalación: $_selectedAdminInstallation',
+                    style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
+                  ),
+                ),
+                InkWell(
+                  onTap: () => setState(() => _selectedAdminInstallation = null),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: slate800,
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    child: const Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text('Ver Todas', style: TextStyle(color: slate400, fontSize: 11)),
+                        SizedBox(width: 4),
+                        Icon(Icons.close, size: 14, color: slate400),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
 
         // 2. Navigation Switch and Filter Controls
         Container(
@@ -4030,43 +4064,18 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                       ),
                     ),
                   ),
-                  Expanded(
-                    child: GestureDetector(
-                      onTap: () => setState(() => _selectedView = 'historial'),
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(vertical: 10),
-                        decoration: BoxDecoration(
-                          border: Border(
-                            bottom: BorderSide(
-                              color: _selectedView == 'historial' ? const Color(0xFF10B981) : Colors.transparent,
-                              width: 3,
-                            ),
-                          ),
-                        ),
-                        child: Text(
-                          'HISTORIAL',
-                          textAlign: TextAlign.center,
-                          style: TextStyle(
-                            fontSize: 13,
-                            fontWeight: FontWeight.bold,
-                            color: _selectedView == 'historial' ? Colors.white : slate400,
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
                 ],
               ),
               const SizedBox(height: 12),
 
-              // Search Bar + Export CSV Action
+              // Search Bar + Sort Action + Date Filter Action + Export Action
               Row(
                 children: [
                   Expanded(
                     child: TextField(
                       controller: _searchController,
                       decoration: InputDecoration(
-                        hintText: 'Buscar visitante o patente...',
+                        hintText: 'Buscar',
                         prefixIcon: const Icon(Icons.search, color: slate400),
                         suffixIcon: _searchQuery.isNotEmpty
                             ? IconButton(
@@ -4102,38 +4111,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                   ),
                   const SizedBox(width: 8),
 
-                  // Sorting Dropdown
-                  Container(
-                    decoration: BoxDecoration(
-                      color: slate800,
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    padding: const EdgeInsets.symmetric(horizontal: 4),
-                    child: DropdownButtonHideUnderline(
-                      child: DropdownButton<String>(
-                        value: _sortOption,
-                        icon: const Icon(Icons.sort, color: Color(0xFF10B981)),
-                        dropdownColor: slate800,
-                        style: const TextStyle(color: Colors.white, fontSize: 13),
-                        onChanged: (String? newValue) {
-                          if (newValue != null) {
-                            setState(() {
-                              _sortOption = newValue;
-                            });
-                          }
-                        },
-                        items: const [
-                          DropdownMenuItem(value: 'hora_desc', child: Text('Más recientes')),
-                          DropdownMenuItem(value: 'hora_asc', child: Text('Más antiguos')),
-                          DropdownMenuItem(value: 'az', child: Text('A-Z (Nombre)')),
-                          DropdownMenuItem(value: 'za', child: Text('Z-A (Nombre)')),
-                        ],
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  
-                  // Export button
+                  // Single Toggle Sort Button (Arrow Down / A-Z)
                   IconButton.filled(
                     style: IconButton.styleFrom(
                       backgroundColor: slate800,
@@ -4141,10 +4119,57 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                       padding: const EdgeInsets.all(12),
                     ),
-                    icon: const Icon(Icons.file_download_rounded),
-                    tooltip: 'Exportar CSV',
-                    onPressed: _exportHistoryToCSV,
+                    icon: Icon(
+                      _sortOption == 'hora_desc' ? Icons.arrow_downward_rounded : Icons.sort_by_alpha_rounded,
+                      size: 20,
+                    ),
+                    tooltip: _sortOption == 'hora_desc' ? 'Orden: Fecha y Hora (Más reciente)' : 'Orden: Alfabético (A-Z)',
+                    onPressed: () {
+                      setState(() {
+                        _sortOption = _sortOption == 'hora_desc' ? 'az' : 'hora_desc';
+                      });
+                    },
                   ),
+                  const SizedBox(width: 8),
+
+                  // Date Filter Button
+                  IconButton.filled(
+                    style: IconButton.styleFrom(
+                      backgroundColor: _selectedDateRange != null ? const Color(0xFF10B981).withValues(alpha: 0.2) : slate800,
+                      foregroundColor: _selectedDateRange != null ? const Color(0xFF10B981) : slate400,
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                      padding: const EdgeInsets.all(12),
+                    ),
+                    icon: Icon(
+                      _selectedDateRange != null ? Icons.calendar_today_rounded : Icons.calendar_month_rounded,
+                      size: 20,
+                    ),
+                    tooltip: _selectedDateRange != null ? 'Filtro Fecha Activo (Toca para quitar)' : 'Filtrar por Fecha',
+                    onPressed: () {
+                      if (_selectedDateRange != null) {
+                        setState(() {
+                          _selectedDateRange = null;
+                        });
+                      } else {
+                        _selectDateRange();
+                      }
+                    },
+                  ),
+                  const SizedBox(width: 8),
+
+                  // Export button
+                  if (widget.userRole == UserRole.admin)
+                    IconButton.filled(
+                      style: IconButton.styleFrom(
+                        backgroundColor: slate800,
+                        foregroundColor: const Color(0xFF10B981),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                        padding: const EdgeInsets.all(12),
+                      ),
+                      icon: const Icon(Icons.file_download_rounded, size: 20),
+                      tooltip: 'Exportar CSV',
+                      onPressed: _exportHistoryToCSV,
+                    ),
                 ],
               ),
               const SizedBox(height: 12),
@@ -4165,51 +4190,18 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                     _buildFilterChip('camion', icon: Icons.local_shipping, tooltip: 'Camión'),
                     const SizedBox(width: 8),
                     _buildFilterChip('bicicleta', icon: Icons.pedal_bike, tooltip: 'Bicicleta'),
-                    if (_selectedView == 'historial') ...[
-                      const SizedBox(width: 12),
-                      Container(
-                        height: 16,
-                        width: 1,
-                        color: slate700,
-                      ),
+                    if (_selectedDateRange != null) ...[
                       const SizedBox(width: 12),
                       ActionChip(
-                        backgroundColor: _selectedDateRange != null ? const Color(0xFF10B981).withValues(alpha: 0.15) : slate800,
-                        side: BorderSide(
-                          color: _selectedDateRange != null ? const Color(0xFF10B981) : slate700,
-                          width: 1,
-                        ),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                        avatar: Icon(
-                          Icons.calendar_month_rounded, 
-                          size: 16, 
-                          color: _selectedDateRange != null ? const Color(0xFF10B981) : slate400,
-                        ),
+                        avatar: const Icon(Icons.close, size: 14, color: Color(0xFF10B981)),
                         label: Text(
-                          _selectedDateRange == null
-                              ? 'Filtrar Fecha'
-                              : '${_selectedDateRange!.start.day}/${_selectedDateRange!.start.month} - ${_selectedDateRange!.end.day}/${_selectedDateRange!.end.month}',
-                          style: TextStyle(
-                            fontSize: 12,
-                            fontWeight: FontWeight.bold,
-                            color: _selectedDateRange != null ? const Color(0xFF10B981) : slate300,
-                          ),
+                          '${_selectedDateRange!.start.day}/${_selectedDateRange!.start.month} - ${_selectedDateRange!.end.day}/${_selectedDateRange!.end.month}',
+                          style: const TextStyle(fontSize: 11, color: Color(0xFF10B981), fontWeight: FontWeight.bold),
                         ),
-                        onPressed: _selectDateRange,
+                        backgroundColor: const Color(0xFF10B981).withValues(alpha: 0.15),
+                        side: const BorderSide(color: Color(0xFF10B981)),
+                        onPressed: () => setState(() => _selectedDateRange = null),
                       ),
-                      if (_selectedDateRange != null) ...[
-                        const SizedBox(width: 6),
-                        IconButton(
-                          padding: EdgeInsets.zero,
-                          constraints: const BoxConstraints(),
-                          icon: const Icon(Icons.cancel_rounded, size: 18, color: Colors.redAccent),
-                          onPressed: () {
-                            setState(() {
-                              _selectedDateRange = null;
-                            });
-                          },
-                        ),
-                      ],
                     ],
                   ],
                 ),
@@ -5258,72 +5250,104 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                               ),
                               const SizedBox(width: 16),
                               Expanded(
-                                child: Padding(
-                                  padding: const EdgeInsets.symmetric(vertical: 16),
-                                  child: Column(
-                                    crossAxisAlignment: CrossAxisAlignment.start,
-                                    children: [
-                                      Text(
-                                        name,
-                                        style: const TextStyle(
-                                          fontSize: 18,
-                                          fontWeight: FontWeight.bold,
-                                          color: Colors.white,
+                                child: InkWell(
+                                  onTap: () {
+                                    setState(() {
+                                      _selectedAdminInstallation = name;
+                                      _currentTabIndex = 0; // Monitoreo tab
+                                    });
+                                  },
+                                  child: Padding(
+                                    padding: const EdgeInsets.symmetric(vertical: 16),
+                                    child: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        Row(
+                                          children: [
+                                            Text(
+                                              name,
+                                              style: const TextStyle(
+                                                fontSize: 18,
+                                                fontWeight: FontWeight.bold,
+                                                color: Colors.white,
+                                              ),
+                                            ),
+                                            const SizedBox(width: 6),
+                                            const Icon(Icons.arrow_forward_ios_rounded, size: 14, color: Color(0xFF10B981)),
+                                          ],
                                         ),
-                                      ),
-                                      const SizedBox(height: 12),
-                                      Row(
-                                        children: [
-                                          const Icon(Icons.security, size: 16, color: Color(0xFF10B981)),
-                                          const SizedBox(width: 8),
-                                          const Text(
-                                            'Clave Guardia: ',
-                                            style: TextStyle(fontSize: 13, color: slate400),
-                                          ),
-                                          Text(
-                                            guardKey,
-                                            style: const TextStyle(
-                                              fontSize: 14,
-                                              fontWeight: FontWeight.bold,
-                                              color: Colors.white,
-                                              letterSpacing: 1.0,
+                                        const SizedBox(height: 12),
+                                        Row(
+                                          children: [
+                                            const Icon(Icons.security, size: 16, color: Color(0xFF10B981)),
+                                            const SizedBox(width: 8),
+                                            const Text(
+                                              'Clave Guardia: ',
+                                              style: TextStyle(fontSize: 13, color: slate400),
                                             ),
-                                          ),
-                                        ],
-                                      ),
-                                      const SizedBox(height: 8),
-                                      Row(
-                                        children: [
-                                          const Icon(Icons.person_outline, size: 16, color: Colors.blueAccent),
-                                          const SizedBox(width: 8),
-                                          const Text(
-                                            'Clave Cliente: ',
-                                            style: TextStyle(fontSize: 13, color: slate400),
-                                          ),
-                                          Text(
-                                            clientKey,
-                                            style: const TextStyle(
-                                              fontSize: 14,
-                                              fontWeight: FontWeight.bold,
-                                              color: Colors.white,
-                                              letterSpacing: 1.0,
+                                            Text(
+                                              guardKey,
+                                              style: const TextStyle(
+                                                fontSize: 14,
+                                                fontWeight: FontWeight.bold,
+                                                color: Colors.white,
+                                                letterSpacing: 1.0,
+                                              ),
                                             ),
-                                          ),
-                                        ],
-                                      ),
-                                    ],
+                                          ],
+                                        ),
+                                        const SizedBox(height: 8),
+                                        Row(
+                                          children: [
+                                            const Icon(Icons.person_outline, size: 16, color: Colors.blueAccent),
+                                            const SizedBox(width: 8),
+                                            const Text(
+                                              'Clave Cliente: ',
+                                              style: TextStyle(fontSize: 13, color: slate400),
+                                            ),
+                                            Text(
+                                              clientKey,
+                                              style: const TextStyle(
+                                                fontSize: 14,
+                                                fontWeight: FontWeight.bold,
+                                                color: Colors.white,
+                                                letterSpacing: 1.0,
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ],
+                                    ),
                                   ),
                                 ),
                               ),
                               
-                              // Action Buttons: Destinos / Edit / Delete
+                              // Action Buttons: Enter / Destinos / Edit / Delete
+                              InkWell(
+                                onTap: () {
+                                  setState(() {
+                                    _selectedAdminInstallation = name;
+                                    _currentTabIndex = 0; // Monitoreo tab
+                                  });
+                                },
+                                child: Container(
+                                  width: 50,
+                                  color: const Color(0xFF10B981).withValues(alpha: 0.1),
+                                  child: const Center(
+                                    child: Tooltip(
+                                      message: 'Entrar a monitorear esta instalación',
+                                      child: Icon(Icons.login_rounded, color: Color(0xFF10B981), size: 22),
+                                    ),
+                                  ),
+                                ),
+                              ),
                               InkWell(
                                 onTap: () => _showManageDestinationsModal(name),
                                 child: Container(
-                                  width: 60,
-                                  color: const Color(0xFF10B981).withValues(alpha: 0.05),
+                                  width: 50,
+                                  color: Colors.white.withValues(alpha: 0.03),
                                   child: const Center(
-                                    child: Icon(Icons.list_alt_rounded, color: Color(0xFF10B981), size: 22),
+                                    child: Icon(Icons.list_alt_rounded, color: slate300, size: 22),
                                   ),
                                 ),
                               ),
@@ -5334,7 +5358,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                                   oldClientKey: clientKey,
                                 ),
                                 child: Container(
-                                  width: 60,
+                                  width: 50,
                                   color: Colors.amber.withValues(alpha: 0.05),
                                   child: const Center(
                                     child: Icon(Icons.edit_outlined, color: Colors.amber, size: 22),
@@ -5344,7 +5368,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                               InkWell(
                                 onTap: () => _confirmDeleteInstallation(name),
                                 child: Container(
-                                  width: 60,
+                                  width: 50,
                                   color: Colors.redAccent.withValues(alpha: 0.05),
                                   child: const Center(
                                     child: Icon(Icons.delete_outline_rounded, color: Colors.redAccent, size: 22),
