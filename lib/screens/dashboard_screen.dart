@@ -134,39 +134,46 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
   }
 
   // --- Filtering calculations ---
+  String? get _activeInstallation => _selectedAdminInstallation ?? widget.installationName;
+
   int get _peopleInsideCount {
-    if (widget.installationName != null) {
-      return _records.where((r) => r.type == 'persona' && r.isInside && r.destination.startsWith('${widget.installationName} | ')).length;
+    final inst = _activeInstallation;
+    if (inst != null) {
+      return _records.where((r) => r.type == 'persona' && r.isInside && r.destination.startsWith('$inst | ')).length;
     }
-    return ref.read(dashboardProvider).peopleInside;
+    return _records.where((r) => r.type == 'persona' && r.isInside).length;
   }
   
   int get _vehiclesInsideCount {
-    if (widget.installationName != null) {
-      return _records.where((r) => r.type == 'vehiculo' && r.isInside && r.destination.startsWith('${widget.installationName} | ')).length;
+    final inst = _activeInstallation;
+    if (inst != null) {
+      return _records.where((r) => r.type == 'vehiculo' && r.isInside && r.destination.startsWith('$inst | ')).length;
     }
-    return ref.read(dashboardProvider).vehiclesInside;
+    return _records.where((r) => r.type == 'vehiculo' && r.isInside).length;
   }
 
   int get _trucksInsideCount {
-    if (widget.installationName != null) {
-      return _records.where((r) => r.type == 'vehiculo' && r.isInside && r.destination.startsWith('${widget.installationName} | ') && (r.vehicleType?.toLowerCase().contains('camión') == true || r.vehicleType?.toLowerCase().contains('camion') == true)).length;
+    final inst = _activeInstallation;
+    if (inst != null) {
+      return _records.where((r) => r.type == 'vehiculo' && r.isInside && r.destination.startsWith('$inst | ') && (r.vehicleType?.toLowerCase().contains('camión') == true || r.vehicleType?.toLowerCase().contains('camion') == true)).length;
     }
-    return ref.read(dashboardProvider).trucksInside;
+    return _records.where((r) => r.type == 'vehiculo' && r.isInside && (r.vehicleType?.toLowerCase().contains('camión') == true || r.vehicleType?.toLowerCase().contains('camion') == true)).length;
   }
 
   int get _motosInsideCount {
-    if (widget.installationName != null) {
-      return _records.where((r) => r.type == 'vehiculo' && r.isInside && r.destination.startsWith('${widget.installationName} | ') && r.vehicleType?.toLowerCase().contains('moto') == true).length;
+    final inst = _activeInstallation;
+    if (inst != null) {
+      return _records.where((r) => r.type == 'vehiculo' && r.isInside && r.destination.startsWith('$inst | ') && r.vehicleType?.toLowerCase().contains('moto') == true).length;
     }
-    return ref.read(dashboardProvider).motosInside;
+    return _records.where((r) => r.type == 'vehiculo' && r.isInside && r.vehicleType?.toLowerCase().contains('moto') == true).length;
   }
 
   int get _bikesInsideCount {
-    if (widget.installationName != null) {
-      return _records.where((r) => r.type == 'vehiculo' && r.isInside && r.destination.startsWith('${widget.installationName} | ') && r.vehicleType?.toLowerCase().contains('bicicleta') == true).length;
+    final inst = _activeInstallation;
+    if (inst != null) {
+      return _records.where((r) => r.type == 'vehiculo' && r.isInside && r.destination.startsWith('$inst | ') && r.vehicleType?.toLowerCase().contains('bicicleta') == true).length;
     }
-    return ref.read(dashboardProvider).bikesInside;
+    return _records.where((r) => r.type == 'vehiculo' && r.isInside && r.vehicleType?.toLowerCase().contains('bicicleta') == true).length;
   }
 
   List<AccessRecord> get _filteredRecords {
@@ -646,8 +653,8 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                               type: type,
                               name: name,
                               identifier: identifier,
-                              reason: widget.installationName != null 
-                                  ? '${widget.installationName} | $reason' 
+                              reason: _activeInstallation != null 
+                                  ? '$_activeInstallation | $reason' 
                                   : reason,
                               createdAt: DateTime.now(),
                             );
@@ -721,8 +728,8 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
         docId: pre.docId,
         plate: pre.plate,
         vehicleType: pre.vehicleType,
-        destination: widget.installationName != null
-            ? '${widget.installationName} | [ACCESO DENEGADO - LISTA NEGRA] ${pre.destination}'
+        destination: _activeInstallation != null
+            ? '$_activeInstallation | [ACCESO DENEGADO - LISTA NEGRA] ${pre.destination}'
             : '[ACCESO DENEGADO - LISTA NEGRA] ${pre.destination}',
         entryTime: DateTime.now(),
         isInside: false,
@@ -820,8 +827,8 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
       docId: pre.docId,
       plate: pre.plate,
       vehicleType: pre.vehicleType,
-      destination: widget.installationName != null
-          ? '${widget.installationName} | ${pre.destination} [Visita]'
+      destination: _activeInstallation != null
+          ? '$_activeInstallation | ${pre.destination} [Visita]'
           : '${pre.destination} [Visita]',
       entryTime: DateTime.now(),
       isInside: true,
@@ -1687,7 +1694,8 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     String vehicleType = 'Auto';
     bool isRut = prefilledDocId == null || prefilledDocId.isEmpty || RegExp(r'^[0-9kK\.\-]+$').hasMatch(prefilledDocId);
     
-    final List<String> availableDestinations = List<String>.from(_destinationsBox.get(widget.installationName) ?? ['Administración', 'Bodega', 'Estacionamiento']);
+    String? selectedInstallationForRecord = _activeInstallation;
+    final List<String> availableDestinations = List<String>.from(_destinationsBox.get(selectedInstallationForRecord) ?? ['Administración', 'Bodega', 'Estacionamiento']);
     if (!availableDestinations.contains('Otro...')) {
       availableDestinations.add('Otro...');
     }
@@ -1945,6 +1953,37 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                         ],
                       ),
                       const Divider(height: 24, color: slate700),
+
+                      if (_activeInstallation == null && widget.userRole == UserRole.admin) ...[
+                        DropdownButtonFormField<String>(
+                          value: selectedInstallationForRecord,
+                          decoration: InputDecoration(
+                            labelText: 'Seleccione Instalación / Grupo *',
+                            prefixIcon: const Icon(Icons.business_rounded, color: Color(0xFF10B981)),
+                            border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                            filled: true,
+                            fillColor: slate900,
+                          ),
+                          items: _installationsBox.values
+                              .where((v) => v is Map && v['name'] != null)
+                              .map((v) => (v as Map)['name'] as String)
+                              .map((instName) => DropdownMenuItem(value: instName, child: Text(instName)))
+                              .toList(),
+                          validator: (val) => val == null || val.isEmpty ? 'Seleccione una instalación' : null,
+                          onChanged: (val) {
+                            if (val != null) {
+                              setModalState(() {
+                                selectedInstallationForRecord = val;
+                                availableDestinations.clear();
+                                availableDestinations.addAll(List<String>.from(_destinationsBox.get(val) ?? ['Administración', 'Bodega', 'Estacionamiento']));
+                                if (!availableDestinations.contains('Otro...')) availableDestinations.add('Otro...');
+                                selectedDestination = availableDestinations.first;
+                              });
+                            }
+                          },
+                        ),
+                        const SizedBox(height: 16),
+                      ],
 
                       TextFormField(
                         controller: nameController,
@@ -2368,6 +2407,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                                 ? '$destination [Visita]'
                                 : destination;
 
+                            final targetInst = selectedInstallationForRecord ?? _activeInstallation;
                             final newRecord = AccessRecord(
                               id: DateTime.now().millisecondsSinceEpoch.toString(),
                               type: type,
@@ -2375,8 +2415,8 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                               docId: docId,
                               plate: type == 'vehiculo' ? plate : null,
                               vehicleType: type == 'vehiculo' ? vehicleType : null,
-                              destination: widget.installationName != null
-                                  ? '${widget.installationName} | $finalDestination'
+                              destination: targetInst != null
+                                  ? '$targetInst | $finalDestination'
                                   : finalDestination,
                               entryTime: DateTime.now(),
                               photoPath: localPhotoPath,
@@ -2694,18 +2734,19 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                         onPressed: () {
                           if (formKey.currentState!.validate()) {
                             formKey.currentState!.save();
-                            final newPreAuth = PreAuthRecord(
-                              id: 'pre_${DateTime.now().millisecondsSinceEpoch}',
-                              type: type,
-                              name: name,
-                              docId: docId,
-                              plate: type == 'vehiculo' ? plate : null,
-                              vehicleType: type == 'vehiculo' ? vehicleType : null,
-                              destination: widget.installationName != null
-                                  ? '${widget.installationName} | $destination'
-                                  : destination,
-                              visitDate: visitDate,
-                            );
+                              final targetInst = _activeInstallation;
+                              final newPreAuth = PreAuthRecord(
+                                id: 'pre_${DateTime.now().millisecondsSinceEpoch}',
+                                type: type,
+                                name: name,
+                                docId: docId,
+                                plate: type == 'vehiculo' ? plate : null,
+                                vehicleType: type == 'vehiculo' ? vehicleType : null,
+                                destination: targetInst != null
+                                    ? '$targetInst | $destination'
+                                    : destination,
+                                visitDate: visitDate,
+                              );
 
                             _preAuthBox.put(newPreAuth.id, newPreAuth.toMap());
                             _refreshUILists();
@@ -3854,84 +3895,64 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     return _buildMonitoreoTab();
   }
 
+  Widget _buildCompactStatsSummary() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+      decoration: BoxDecoration(
+        color: slate900,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: slate700.withValues(alpha: 0.5)),
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceAround,
+        children: [
+          _buildStatSummaryItem('Personas', '$_peopleInsideCount', Icons.person_rounded, const Color(0xFF10B981)),
+          Container(width: 1, height: 24, color: slate700),
+          _buildStatSummaryItem('Vehículos', '$_vehiclesInsideCount', Icons.directions_car_rounded, const Color(0xFF3B82F6)),
+          if (_trucksInsideCount > 0) ...[
+            Container(width: 1, height: 24, color: slate700),
+            _buildStatSummaryItem('Camiones', '$_trucksInsideCount', Icons.local_shipping_rounded, Colors.orangeAccent),
+          ],
+          if (_motosInsideCount > 0) ...[
+            Container(width: 1, height: 24, color: slate700),
+            _buildStatSummaryItem('Motos', '$_motosInsideCount', Icons.two_wheeler_rounded, Colors.purpleAccent),
+          ],
+          if (_bikesInsideCount > 0) ...[
+            Container(width: 1, height: 24, color: slate700),
+            _buildStatSummaryItem('Bicis', '$_bikesInsideCount', Icons.pedal_bike_rounded, Colors.tealAccent),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildStatSummaryItem(String label, String value, IconData icon, Color color) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(icon, size: 18, color: color),
+        const SizedBox(width: 6),
+        Text(value, style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: color)),
+        const SizedBox(width: 4),
+        Text(label, style: const TextStyle(fontSize: 11, color: slate400)),
+      ],
+    );
+  }
+
   // --- Monitoreo Tab UI ---
   Widget _buildMonitoreoTab() {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        // 1. Stats and Quick Entry Row
+        // 1. Sleek Compact Header & Action Row
         Container(
-          padding: const EdgeInsets.all(16),
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
           color: slate800,
           child: Column(
             children: [
-              Row(
-                children: [
-                  Expanded(
-                    child: _buildStatCard(
-                      title: 'Personas Dentro',
-                      value: '$_peopleInsideCount',
-                      icon: Icons.people_alt_rounded,
-                      color: const Color(0xFF10B981),
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: _buildStatCard(
-                      title: 'Vehículos Dentro',
-                      value: '$_vehiclesInsideCount',
-                      icon: Icons.directions_car_rounded,
-                      color: const Color(0xFF3B82F6),
-                    ),
-                  ),
-                ],
-              ),
-              if (_trucksInsideCount > 0 || _motosInsideCount > 0 || _bikesInsideCount > 0) ...[
-                const SizedBox(height: 12),
-                Row(
-                  children: [
-                    if (_trucksInsideCount > 0)
-                      Expanded(
-                        child: Padding(
-                          padding: EdgeInsets.only(
-                            right: (_motosInsideCount > 0 || _bikesInsideCount > 0) ? 12 : 0,
-                          ),
-                          child: _buildStatCard(
-                            title: 'Camiones Dentro',
-                            value: '$_trucksInsideCount',
-                            icon: Icons.local_shipping_rounded,
-                            color: Colors.orangeAccent,
-                          ),
-                        ),
-                      ),
-                    if (_motosInsideCount > 0)
-                      Expanded(
-                        child: Padding(
-                          padding: EdgeInsets.only(
-                            right: _bikesInsideCount > 0 ? 12 : 0,
-                          ),
-                          child: _buildStatCard(
-                            title: 'Motos Dentro',
-                            value: '$_motosInsideCount',
-                            icon: Icons.motorcycle_rounded,
-                            color: Colors.deepPurpleAccent,
-                          ),
-                        ),
-                      ),
-                    if (_bikesInsideCount > 0)
-                      Expanded(
-                        child: _buildStatCard(
-                          title: 'Bicicletas Dentro',
-                          value: '$_bikesInsideCount',
-                          icon: Icons.pedal_bike_rounded,
-                          color: Colors.tealAccent,
-                        ),
-                      ),
-                  ],
-                ),
-              ],
+              _buildCompactStatsSummary(),
               if (widget.userRole != UserRole.cliente) ...[
-                const SizedBox(height: 16),
+                const SizedBox(height: 12),
                 Row(
                   children: [
                     Expanded(
@@ -3940,11 +3961,11 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                           backgroundColor: const Color(0xFF10B981).withValues(alpha: 0.15),
                           foregroundColor: const Color(0xFF10B981),
                           side: const BorderSide(color: Color(0xFF10B981), width: 1.5),
-                          padding: const EdgeInsets.symmetric(vertical: 14),
+                          padding: const EdgeInsets.symmetric(vertical: 12),
                           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                         ),
-                        icon: const Icon(Icons.person_add_alt_1_rounded),
-                        label: const Text('Ingreso Persona', style: TextStyle(fontWeight: FontWeight.bold)),
+                        icon: const Icon(Icons.person_add_alt_1_rounded, size: 20),
+                        label: const Text('Ingreso Persona', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
                         onPressed: () => _showNewEntryModal('persona'),
                       ),
                     ),
@@ -3955,11 +3976,11 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                           backgroundColor: const Color(0xFF3B82F6).withValues(alpha: 0.15),
                           foregroundColor: const Color(0xFF3B82F6),
                           side: const BorderSide(color: Color(0xFF3B82F6), width: 1.5),
-                          padding: const EdgeInsets.symmetric(vertical: 14),
+                          padding: const EdgeInsets.symmetric(vertical: 12),
                           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                         ),
-                        icon: const Icon(Icons.local_shipping_rounded),
-                        label: const Text('Ingreso Vehículo', style: TextStyle(fontWeight: FontWeight.bold)),
+                        icon: const Icon(Icons.directions_car_rounded, size: 20),
+                        label: const Text('Ingreso Vehículo', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
                         onPressed: () => _showNewEntryModal('vehiculo'),
                       ),
                     ),
