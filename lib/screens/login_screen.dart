@@ -89,6 +89,11 @@ class _LoginScreenState extends State<LoginScreen> {
           });
         }
 
+        // Save session locally
+        final sessionBox = Hive.box('session_box');
+        await sessionBox.put('active_role', roleStr);
+        await sessionBox.put('active_installation', instName);
+
         setState(() {
           _isLoading = false;
         });
@@ -119,6 +124,10 @@ class _LoginScreenState extends State<LoginScreen> {
       final adminPassword = cachedAdminKey ?? 'Operonte23#';
 
       if (password == adminPassword) {
+        final sessionBox = Hive.box('session_box');
+        await sessionBox.put('active_role', 'admin');
+        await sessionBox.put('active_installation', null);
+
         setState(() {
           _isLoading = false;
           _errorMessage = null;
@@ -143,6 +152,10 @@ class _LoginScreenState extends State<LoginScreen> {
           final clientKey = data['clientKey'] as String?;
 
           if (password == guardKey) {
+            final sessionBox = Hive.box('session_box');
+            await sessionBox.put('active_role', 'guardia');
+            await sessionBox.put('active_installation', instName);
+
             setState(() {
               _isLoading = false;
               _errorMessage = null;
@@ -159,6 +172,10 @@ class _LoginScreenState extends State<LoginScreen> {
             }
             return;
           } else if (password == clientKey) {
+            final sessionBox = Hive.box('session_box');
+            await sessionBox.put('active_role', 'cliente');
+            await sessionBox.put('active_installation', instName);
+
             setState(() {
               _isLoading = false;
               _errorMessage = null;
@@ -347,8 +364,8 @@ class _LoginScreenState extends State<LoginScreen> {
                       ),
                       SizedBox(height: 8),
                       Text(
-                        'Las claves de acceso de los guardias, clientes e instalaciones son dinámicas y administradas de forma segura desde la base de datos de Supabase.',
-                        style: TextStyle(color: slate300, fontSize: 12, height: 1.4),
+                        'Las claves de acceso de los guardias, clientes e instalaciones son dinámicas y administradas de forma remota y segura por el sistema central.',
+                        style: const TextStyle(color: slate300, fontSize: 12, height: 1.4),
                       ),
                     ],
                   ),

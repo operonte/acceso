@@ -2937,7 +2937,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                         ),
                         _buildSecurityCard(
                           title: 'Comunicaciones Seguras (OWASP M3)',
-                          description: 'Todo el tráfico de sincronización hacia Supabase utiliza HTTPS con TLS 1.3 y certificados SSL robustos, evitando intercepciones (MitM).',
+                          description: 'Todo el tráfico de sincronización hacia el servidor central utiliza HTTPS con TLS 1.3 y certificados SSL robustos, evitando intercepciones (MitM).',
                           isSecure: true,
                         ),
                         _buildSecurityCard(
@@ -2970,7 +2970,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                             '2. USO DE LOS DATOS\n'
                             'Toda la información recopilada tiene como fin único el registro histórico de accesos y la gestión de la Lista Negra del recinto para garantizar la seguridad perimetral. Los datos no son vendidos, arrendados ni compartidos con terceros para fines comerciales.\n\n'
                             '3. SEGURIDAD DE LOS DATOS\n'
-                            'Los datos se almacenan localmente en el sandbox seguro del dispositivo móvil y se sincronizan a través de canales encriptados HTTPS/TLS con la base de datos centralizada de Supabase bajo estrictas políticas de acceso restringido.\n\n'
+                            'Los datos se almacenan localmente en el sandbox seguro del dispositivo móvil y se sincronizan a través de canales encriptados HTTPS/TLS con la base de datos centralizada bajo estrictas políticas de acceso restringido.\n\n'
                             '4. DERECHOS ARCO\n'
                             'Los titulares de los datos tienen derecho a solicitar el acceso, rectificación o eliminación de sus registros del sistema poniéndose en contacto con el administrador del respectivo recinto.',
                             style: TextStyle(color: slate300, fontSize: 13, height: 1.5),
@@ -3755,8 +3755,12 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
           IconButton(
             tooltip: 'Cerrar Sesión',
             icon: const Icon(Icons.logout_rounded, color: slate400),
-            onPressed: () {
-              Navigator.pushReplacementNamed(context, '/');
+            onPressed: () async {
+              final sessionBox = Hive.box('session_box');
+              await sessionBox.clear();
+              if (context.mounted) {
+                Navigator.pushReplacementNamed(context, '/');
+              }
             },
           ),
           const SizedBox(width: 8),
@@ -5096,7 +5100,10 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
   }
 
   Widget _buildInstallationsTab() {
-    final installations = _installationsBox.values.map((v) => Map<String, dynamic>.from(v as Map)).toList();
+    final installations = _installationsBox.values
+        .where((v) => v is Map)
+        .map((v) => Map<String, dynamic>.from(v as Map))
+        .toList();
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
