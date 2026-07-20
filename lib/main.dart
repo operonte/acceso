@@ -28,6 +28,7 @@ void main() async {
   await Hive.openBox('installations_box');
   await Hive.openBox('destinations_box');
   await Hive.openBox('sync_metadata_box');
+  await Hive.openBox('session_box');
 
   // Keep boxes empty by default for clean start
   
@@ -37,6 +38,20 @@ void main() async {
   // Initialize Supabase Synchronization
   await SupabaseSyncManager.initialize();
   
+  // Get persisted session if any
+  final sessionBox = Hive.box('session_box');
+  final String? activeRoleStr = sessionBox.get('active_role') as String?;
+  final String? activeInstallation = sessionBox.get('active_installation') as String?;
+  
+  UserRole? activeRole;
+  if (activeRoleStr == 'admin') {
+    activeRole = UserRole.admin;
+  } else if (activeRoleStr == 'guardia') {
+    activeRole = UserRole.guardia;
+  } else if (activeRoleStr == 'cliente') {
+    activeRole = UserRole.cliente;
+  }
+
   // Initialize Sentry for real-time error tracking
   await SentryFlutter.init(
     (options) {
@@ -45,15 +60,25 @@ void main() async {
       options.attachScreenshot = true;
     },
     appRunner: () => runApp(
-      const ProviderScope(
-        child: MyApp(),
+      ProviderScope(
+        child: MyApp(
+          initialRole: activeRole,
+          initialInstallation: activeInstallation,
+        ),
       ),
     ),
   );
 }
 
 class MyApp extends StatelessWidget {
-  const MyApp({super.key});
+  final UserRole? initialRole;
+  final String? initialInstallation;
+
+  const MyApp({
+    super.key,
+    this.initialRole,
+    this.initialInstallation,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -75,7 +100,7 @@ class MyApp extends StatelessWidget {
           surface: slate800,
         ),
       ),
-      initialRoute: '/',
+      initialRoute: initialRole != null ? '/dashboard' : '/',
       routes: {
         '/': (context) => const LoginScreen(),
         '/dashboard': (context) {
@@ -87,6 +112,13 @@ class MyApp extends StatelessWidget {
             );
           } else if (args is UserRole) {
             return DashboardScreen(userRole: args);
+          }
+          
+          if (initialRole != null) {
+            return DashboardScreen(
+              userRole: initialRole!,
+              installationName: initialInstallation,
+            );
           }
           return const DashboardScreen(userRole: UserRole.guardia);
         },
