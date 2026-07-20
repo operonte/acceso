@@ -30,6 +30,18 @@ graph TD
 
 ---
 
+## 📂 Estructura del Proyecto y Modularización UI
+
+Para reducir la deuda técnica y adherir a los principios **SOLID**, la pantalla principal `dashboard_screen.dart` fue refactorizada extrayendo sus componentes visuales y utilidades clave en componentes reutilizables en `lib/widgets/`:
+
+* 📊 **`DashboardStats` (`lib/widgets/dashboard_stats.dart`)**: Tarjetas de estadísticas de flujo en tiempo real (personas y vehículos dentro).
+* 👤 **`VisitorCard` (`lib/widgets/visitor_card.dart`)**: Componente que renderiza registros de visitas individuales peatonales/vehiculares, duraciones y fotos de ingreso.
+* 🎟️ **`PreAuthCard` (`lib/widgets/pre_auth_card.dart`)**: Gestiona visitas pre-autorizadas y permite el ingreso rápido e interactivo con generación de pases QR.
+* 🚫 **`BlacklistCard` (`lib/widgets/blacklist_card.dart`)**: Muestra registros y vehículos bloqueados con sus respectivas justificaciones y acciones de revocación.
+* 📥 **`CsvImportModal` (`lib/widgets/csv_import_modal.dart`)**: Gestiona la importación de datos desde archivos CSV (pre-autorizaciones y lista negra), con diálogos de previsualización interactivos y carga segura a Hive y Supabase.
+
+---
+
 ## 🚀 Funcionalidades Clave
 
 * **Importación Masiva de Datos:** Soporte para subir archivos CSV (con delimitador auto-detectado `,` o `;`) para poblar listas de pre-autorizaciones y listas negras.
