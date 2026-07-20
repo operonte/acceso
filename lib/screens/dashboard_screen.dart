@@ -63,7 +63,8 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
   AppNotification? get _activeBannerNotification => ref.read(dashboardProvider).activeBannerNotification;
 
   // --- Monitoreo View Parameters ---
-  String _selectedView = 'dentro'; // 'dentro' or 'historial'
+  String _selectedView = 'dentro'; // 'dentro' or 'salieron' or 'historial'
+  String _sortOption = 'hora_desc';
   String _filterType = 'todos'; // 'todos', 'personas', 'vehiculos'
   String _searchQuery = '';
   final TextEditingController _searchController = TextEditingController();
@@ -176,6 +177,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
       }
 
       if (_selectedView == 'dentro' && !record.isInside) return false;
+      if (_selectedView == 'salieron' && record.isInside) return false;
 
       // 2. Type Filter
       if (_filterType == 'a_pie') {
@@ -224,7 +226,18 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
       }
       return true;
     }).toList()
-      ..sort((a, b) => b.entryTime.compareTo(a.entryTime));
+      ..sort((a, b) {
+        if (_sortOption == 'hora_desc') {
+          return b.entryTime.compareTo(a.entryTime);
+        } else if (_sortOption == 'hora_asc') {
+          return a.entryTime.compareTo(b.entryTime);
+        } else if (_sortOption == 'az') {
+          return a.name.toLowerCase().compareTo(b.name.toLowerCase());
+        } else if (_sortOption == 'za') {
+          return b.name.toLowerCase().compareTo(a.name.toLowerCase());
+        }
+        return b.entryTime.compareTo(a.entryTime);
+      });
   }
 
   List<PreAuthRecord> get _filteredPreAuths {
@@ -3984,8 +3997,34 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                           'EN EL RECINTO',
                           textAlign: TextAlign.center,
                           style: TextStyle(
+                            fontSize: 13,
                             fontWeight: FontWeight.bold,
                             color: _selectedView == 'dentro' ? Colors.white : slate400,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                  Expanded(
+                    child: GestureDetector(
+                      onTap: () => setState(() => _selectedView = 'salieron'),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(vertical: 10),
+                        decoration: BoxDecoration(
+                          border: Border(
+                            bottom: BorderSide(
+                              color: _selectedView == 'salieron' ? const Color(0xFF10B981) : Colors.transparent,
+                              width: 3,
+                            ),
+                          ),
+                        ),
+                        child: Text(
+                          'SALIERON',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.bold,
+                            color: _selectedView == 'salieron' ? Colors.white : slate400,
                           ),
                         ),
                       ),
@@ -4005,9 +4044,10 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                           ),
                         ),
                         child: Text(
-                          'HISTORIAL COMPLETO',
+                          'HISTORIAL',
                           textAlign: TextAlign.center,
                           style: TextStyle(
+                            fontSize: 13,
                             fontWeight: FontWeight.bold,
                             color: _selectedView == 'historial' ? Colors.white : slate400,
                           ),
@@ -4061,6 +4101,37 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                     ),
                   ),
                   const SizedBox(width: 8),
+
+                  // Sorting Dropdown
+                  Container(
+                    decoration: BoxDecoration(
+                      color: slate800,
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    padding: const EdgeInsets.symmetric(horizontal: 4),
+                    child: DropdownButtonHideUnderline(
+                      child: DropdownButton<String>(
+                        value: _sortOption,
+                        icon: const Icon(Icons.sort, color: Color(0xFF10B981)),
+                        dropdownColor: slate800,
+                        style: const TextStyle(color: Colors.white, fontSize: 13),
+                        onChanged: (String? newValue) {
+                          if (newValue != null) {
+                            setState(() {
+                              _sortOption = newValue;
+                            });
+                          }
+                        },
+                        items: const [
+                          DropdownMenuItem(value: 'hora_desc', child: Text('Más recientes')),
+                          DropdownMenuItem(value: 'hora_asc', child: Text('Más antiguos')),
+                          DropdownMenuItem(value: 'az', child: Text('A-Z (Nombre)')),
+                          DropdownMenuItem(value: 'za', child: Text('Z-A (Nombre)')),
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
                   
                   // Export button
                   IconButton.filled(
@@ -4083,17 +4154,17 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                 scrollDirection: Axis.horizontal,
                 child: Row(
                   children: [
-                    _buildFilterChip('Todos', 'todos'),
+                    _buildFilterChip('todos', label: 'Todos'),
                     const SizedBox(width: 8),
-                    _buildFilterChip('A pie', 'a_pie'),
+                    _buildFilterChip('a_pie', icon: Icons.directions_walk, tooltip: 'A pie'),
                     const SizedBox(width: 8),
-                    _buildFilterChip('Vehículos', 'vehiculos'),
+                    _buildFilterChip('vehiculos', icon: Icons.directions_car, tooltip: 'Vehículos'),
                     const SizedBox(width: 8),
-                    _buildFilterChip('Moto', 'moto'),
+                    _buildFilterChip('moto', icon: Icons.two_wheeler, tooltip: 'Moto'),
                     const SizedBox(width: 8),
-                    _buildFilterChip('Camión', 'camion'),
+                    _buildFilterChip('camion', icon: Icons.local_shipping, tooltip: 'Camión'),
                     const SizedBox(width: 8),
-                    _buildFilterChip('Bicicleta', 'bicicleta'),
+                    _buildFilterChip('bicicleta', icon: Icons.pedal_bike, tooltip: 'Bicicleta'),
                     if (_selectedView == 'historial') ...[
                       const SizedBox(width: 12),
                       Container(
@@ -4320,10 +4391,15 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     );
   }
 
-  Widget _buildFilterChip(String label, String value) {
+  Widget _buildFilterChip(String value, {String? label, IconData? icon, String? tooltip}) {
     final isSelected = _filterType == value;
-    return ChoiceChip(
-      label: Text(label),
+    final content = label != null 
+        ? Text(label) 
+        : Icon(icon, color: isSelected ? Colors.white : slate400, size: 20);
+
+    final chip = ChoiceChip(
+      label: content,
+      showCheckmark: false,
       selected: isSelected,
       onSelected: (selected) {
         if (selected) {
@@ -4340,6 +4416,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
       ),
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
     );
+    return tooltip != null ? Tooltip(message: tooltip, child: chip) : chip;
   }
 
   void _showPhotoDialog(String photoPath) {
