@@ -8,9 +8,12 @@ import 'package:sentry_flutter/sentry_flutter.dart';
 import '../models/access_record.dart';
 import '../models/pre_auth_record.dart';
 import '../models/blacklist_entry.dart';
+import 'notification_helper.dart';
 
 class SupabaseSyncManager {
   static final client = Supabase.instance.client;
+
+  static String? activeInstallationName;
 
   static final ValueNotifier<bool> isOnline = ValueNotifier<bool>(true);
   static final ValueNotifier<bool> isSyncing = ValueNotifier<bool>(false);
@@ -23,10 +26,11 @@ class SupabaseSyncManager {
   static late Box _pendingRecordsBox;
   static late Box _pendingPreAuthBox;
   static late Box _pendingBlacklistBox;
-
   static bool _isInitialized = false;
   static bool _isSyncingDown = false;
   static Timer? _syncTimer;
+
+  static bool get isSyncingDown => _isSyncingDown;
 
   static Future<void> initialize() async {
     if (_isInitialized) return;
@@ -44,11 +48,6 @@ class SupabaseSyncManager {
     final lastSyncString = metaBox.get('last_sync_time') as String?;
     if (lastSyncString != null) {
       lastSyncTime.value = DateTime.parse(lastSyncString);
-    }
-
-    // Pre-populate mock entries if boxes are empty
-    if (_recordsBox.isEmpty && _preAuthBox.isEmpty && _blacklistBox.isEmpty) {
-      await _prepopulateMockData();
     }
 
     _isInitialized = true;
@@ -77,12 +76,14 @@ class SupabaseSyncManager {
           schema: 'public',
           table: 'access_records',
           callback: (payload) {
+            _handleIncomingRealtimeRecord(payload);
             syncAll();
           },
         )
         .subscribe();
-    } catch (e) {
+    } catch (e, stackTrace) {
       debugPrint('Realtime Subscription Error: $e');
+      await Sentry.captureException(e, stackTrace: stackTrace);
     }
 
     // Start periodic sync every 30 seconds
@@ -92,6 +93,56 @@ class SupabaseSyncManager {
 
     // Run initial sync
     syncAll();
+  }
+
+  static void _handleIncomingRealtimeRecord(dynamic payload) {
+    try {
+      final recordData = payload.newRecord;
+      if (recordData == null || recordData.isEmpty) return;
+
+      final String id = recordData['id']?.toString() ?? '';
+      if (id.isEmpty) return;
+
+      // Only notify on new insert events
+      if (payload.eventType != PostgresChangeEvent.insert) return;
+
+      // If we already have this record locally, we probably created it or already received it
+      if (_recordsBox.containsKey(id)) return;
+
+      final String destination = recordData['destination']?.toString() ?? '';
+      final String name = recordData['name']?.toString() ?? 'Persona';
+
+      // Check if it belongs to our active installation name
+      if (activeInstallationName != null) {
+        final prefix = '$activeInstallationName | ';
+        if (!destination.startsWith(prefix)) return;
+      }
+
+      // Check if it's a blacklist denial or pre-auth visit
+      final isBlacklistAlert = destination.contains('[ACCESO DENEGADO - LISTA NEGRA]') || 
+                              destination.contains('[Excepción Lista Negra]') || 
+                              destination.contains('[RESTRICCIÓN]');
+      
+      final isPreauthVisit = destination.contains('[Visita]') || 
+                             destination.contains('(Visita Programada)');
+
+      if (isBlacklistAlert) {
+        NotificationHelper.showNotification(
+          '⚠️ ALERTA DE SEGURIDAD',
+          'Intento de acceso denegado para: $name',
+          isAlert: true,
+        );
+      } else if (isPreauthVisit) {
+        NotificationHelper.showNotification(
+          '📢 Ingreso de Visita',
+          '$name ha ingresado a la instalación.',
+          isAlert: false,
+        );
+      }
+    } catch (e, stackTrace) {
+      debugPrint('Error in _handleIncomingRealtimeRecord: $e');
+      Sentry.captureException(e, stackTrace: stackTrace);
+    }
   }
 
   static void dispose() {
@@ -295,6 +346,10 @@ class SupabaseSyncManager {
   // --- MAPPERS (CamelCase Local <-> SnakeCase Supabase) ---
 
   static Map<String, dynamic> _toSupabaseAccessRecord(AccessRecord r) {
+    String destWithComment = r.destination;
+    if (r.comment != null && r.comment!.trim().isNotEmpty) {
+      destWithComment = "${r.destination} | Comentario: ${r.comment!.trim()}";
+    }
     return {
       'id': r.id,
       'type': r.type,
@@ -302,7 +357,7 @@ class SupabaseSyncManager {
       'doc_id': r.docId,
       'plate': r.plate,
       'vehicle_type': r.vehicleType,
-      'destination': r.destination,
+      'destination': destWithComment,
       'entry_time': r.entryTime.toIso8601String(),
       'exit_time': r.exitTime?.toIso8601String(),
       'is_inside': r.isInside,
@@ -311,6 +366,16 @@ class SupabaseSyncManager {
   }
 
   static AccessRecord _fromSupabaseAccessRecord(Map<String, dynamic> map) {
+    final rawDest = map['destination'] as String? ?? '';
+    String cleanDest = rawDest;
+    String? comment;
+
+    final commentIndex = rawDest.indexOf(' | Comentario: ');
+    if (commentIndex != -1) {
+      cleanDest = rawDest.substring(0, commentIndex);
+      comment = rawDest.substring(commentIndex + ' | Comentario: '.length);
+    }
+
     return AccessRecord(
       id: map['id'] as String,
       type: map['type'] as String,
@@ -318,11 +383,12 @@ class SupabaseSyncManager {
       docId: map['doc_id'] as String,
       plate: map['plate'] as String?,
       vehicleType: map['vehicle_type'] as String?,
-      destination: map['destination'] as String,
-      entryTime: DateTime.parse(map['entry_time'] as String),
-      exitTime: map['exit_time'] != null ? DateTime.parse(map['exit_time'] as String) : null,
+      destination: cleanDest,
+      entryTime: DateTime.parse(map['entry_time'] as String).toLocal(),
+      exitTime: map['exit_time'] != null ? DateTime.parse(map['exit_time'] as String).toLocal() : null,
       isInside: map['is_inside'] as bool,
       photoPath: map['photo_path'] as String?,
+      comment: comment,
     );
   }
 
@@ -341,6 +407,7 @@ class SupabaseSyncManager {
   }
 
   static PreAuthRecord _fromSupabasePreAuth(Map<String, dynamic> map) {
+    final parsedDate = DateTime.parse(map['visit_date'] as String);
     return PreAuthRecord(
       id: map['id'] as String,
       type: map['type'] as String,
@@ -349,7 +416,7 @@ class SupabaseSyncManager {
       plate: map['plate'] as String?,
       vehicleType: map['vehicle_type'] as String?,
       destination: map['destination'] as String,
-      visitDate: DateTime.parse(map['visit_date'] as String),
+      visitDate: DateTime(parsedDate.year, parsedDate.month, parsedDate.day),
       isUsed: map['is_used'] as bool,
     );
   }
@@ -376,53 +443,4 @@ class SupabaseSyncManager {
     );
   }
 
-  static Future<void> _prepopulateMockData() async {
-    // 1. Mock Pre-Auth Records
-    final pre1 = PreAuthRecord(
-      id: 'pre-1',
-      type: 'persona',
-      name: 'Juan Pérez',
-      docId: '12.345.678-9',
-      destination: 'Oficina 402',
-      visitDate: DateTime.now(),
-      isUsed: false,
-    );
-    final pre2 = PreAuthRecord(
-      id: 'pre-2',
-      type: 'vehiculo',
-      name: 'María Gómez',
-      docId: '9.876.543-2',
-      plate: 'ABCD12',
-      vehicleType: 'Toyota Yaris, Gris',
-      destination: 'Depto 105',
-      visitDate: DateTime.now(),
-      isUsed: false,
-    );
-    await _preAuthBox.put(pre1.id, pre1.toMap());
-    await _preAuthBox.put(pre2.id, pre2.toMap());
-
-    // 2. Mock Blacklist Entries
-    final bl1 = BlacklistEntry(
-      id: 'bl-1',
-      type: 'persona',
-      name: 'Pedro Rojas',
-      identifier: '11.111.111-1',
-      reason: 'Antecedentes de altercado con personal de portería.',
-      createdAt: DateTime.now().subtract(const Duration(days: 30)),
-    );
-    await _blacklistBox.put(bl1.id, bl1.toMap());
-
-    // 3. Mock Access Records (History)
-    final rec1 = AccessRecord(
-      id: 'rec-1',
-      type: 'persona',
-      name: 'Carlos Muñoz',
-      docId: '15.555.555-5',
-      destination: 'Bodega Central',
-      entryTime: DateTime.now().subtract(const Duration(days: 2, hours: 3)),
-      exitTime: DateTime.now().subtract(const Duration(days: 2, hours: 1)),
-      isInside: false,
-    );
-    await _recordsBox.put(rec1.id, rec1.toMap());
-  }
 }

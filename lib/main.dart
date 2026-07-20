@@ -2,9 +2,11 @@ import 'package:flutter/material.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:sentry_flutter/sentry_flutter.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'screens/dashboard_screen.dart';
 import 'theme/colors.dart';
 import 'utils/supabase_sync_manager.dart';
+import 'utils/notification_helper.dart';
 import 'screens/login_screen.dart';
 
 void main() async {
@@ -23,7 +25,14 @@ void main() async {
   await Hive.openBox('records_box');
   await Hive.openBox('pre_auth_box');
   await Hive.openBox('blacklist_box');
+  await Hive.openBox('installations_box');
+  await Hive.openBox('destinations_box');
   await Hive.openBox('sync_metadata_box');
+
+  // Keep boxes empty by default for clean start
+  
+  // Initialize system notifications
+  await NotificationHelper.initialize();
   
   // Initialize Supabase Synchronization
   await SupabaseSyncManager.initialize();
@@ -35,7 +44,11 @@ void main() async {
       options.tracesSampleRate = 1.0;
       options.attachScreenshot = true;
     },
-    appRunner: () => runApp(const MyApp()),
+    appRunner: () => runApp(
+      const ProviderScope(
+        child: MyApp(),
+      ),
+    ),
   );
 }
 
@@ -66,8 +79,16 @@ class MyApp extends StatelessWidget {
       routes: {
         '/': (context) => const LoginScreen(),
         '/dashboard': (context) {
-          final role = ModalRoute.of(context)!.settings.arguments as UserRole;
-          return DashboardScreen(userRole: role);
+          final args = ModalRoute.of(context)!.settings.arguments;
+          if (args is LoginSession) {
+            return DashboardScreen(
+              userRole: args.role,
+              installationName: args.installationName,
+            );
+          } else if (args is UserRole) {
+            return DashboardScreen(userRole: args);
+          }
+          return const DashboardScreen(userRole: UserRole.guardia);
         },
       },
     );

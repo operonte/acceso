@@ -10,6 +10,7 @@ class AccessRecord {
   DateTime? exitTime;
   bool isInside;
   String? photoPath;
+  final String? comment; // Optional comment
 
   AccessRecord({
     required this.id,
@@ -23,6 +24,7 @@ class AccessRecord {
     this.exitTime,
     this.isInside = true,
     this.photoPath,
+    this.comment,
   });
 
   Map<String, dynamic> toMap() {
@@ -38,6 +40,7 @@ class AccessRecord {
       'exitTime': exitTime?.toIso8601String(),
       'isInside': isInside,
       'photoPath': photoPath,
+      'comment': comment,
     };
   }
 
@@ -50,10 +53,11 @@ class AccessRecord {
       plate: map['plate'] as String?,
       vehicleType: map['vehicleType'] as String?,
       destination: map['destination'] as String,
-      entryTime: DateTime.parse(map['entryTime'] as String),
-      exitTime: map['exitTime'] != null ? DateTime.parse(map['exitTime'] as String) : null,
+      entryTime: DateTime.parse(map['entryTime'] as String).toLocal(),
+      exitTime: map['exitTime'] != null ? DateTime.parse(map['exitTime'] as String).toLocal() : null,
       isInside: map['isInside'] as bool,
       photoPath: map['photoPath'] as String?,
+      comment: map['comment'] as String?,
     );
   }
 }

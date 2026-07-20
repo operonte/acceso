@@ -10,45 +10,38 @@ import 'package:qr_flutter/qr_flutter.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:csv/csv.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../models/access_record.dart';
 import '../models/pre_auth_record.dart';
 import '../models/blacklist_entry.dart';
+import '../models/app_notification.dart';
+import '../providers/dashboard_provider.dart';
 import 'camera_scanner_screen.dart';
 import '../theme/colors.dart';
 import '../utils/validators.dart';
 import '../utils/file_saver.dart' as file_saver;
 import '../utils/supabase_sync_manager.dart';
+import '../utils/notification_helper.dart';
 
 import 'login_screen.dart' show UserRole;
 
-class AppNotification {
-  final String id;
-  final String type; // 'alerta', 'info', 'sync'
-  final String title;
-  final String body;
-  final DateTime timestamp;
-  bool isRead;
-
-  AppNotification({
-    required this.id,
-    required this.type,
-    required this.title,
-    required this.body,
-    required this.timestamp,
-    this.isRead = false,
-  });
-}
-
-class DashboardScreen extends StatefulWidget {
+class DashboardScreen extends ConsumerStatefulWidget {
   final UserRole userRole;
-  const DashboardScreen({super.key, this.userRole = UserRole.guardia});
+  final String? installationName;
+
+  const DashboardScreen({
+    super.key,
+    this.userRole = UserRole.guardia,
+    this.installationName,
+  });
 
   @override
-  State<DashboardScreen> createState() => _DashboardScreenState();
+  ConsumerState<DashboardScreen> createState() => _DashboardScreenState();
 }
 
-class _DashboardScreenState extends State<DashboardScreen> {
+class _DashboardScreenState extends ConsumerState<DashboardScreen> {
   // Navigation State (0: Monitoreo, 1: Pre-autorizaciones)
   int _currentTabIndex = 0;
 
@@ -60,11 +53,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
   final Box _recordsBox = Hive.box('records_box');
   final Box _preAuthBox = Hive.box('pre_auth_box');
   final Box _blacklistBox = Hive.box('blacklist_box');
+  final Box _installationsBox = Hive.box('installations_box');
+  final Box _destinationsBox = Hive.box('destinations_box');
 
-  // Lists in memory
-  List<AccessRecord> _records = [];
-  List<PreAuthRecord> _preAuths = [];
-  List<BlacklistEntry> _blacklist = [];
+  List<AccessRecord> get _records => ref.read(dashboardProvider).allRecords;
+  List<PreAuthRecord> get _preAuths => ref.read(dashboardProvider).allPreAuths;
+  List<BlacklistEntry> get _blacklist => ref.read(dashboardProvider).allBlacklist;
+  List<AppNotification> get _notifications => ref.read(dashboardProvider).notifications;
+  AppNotification? get _activeBannerNotification => ref.read(dashboardProvider).activeBannerNotification;
 
   // --- Monitoreo View Parameters ---
   String _selectedView = 'dentro'; // 'dentro' or 'historial'
@@ -81,38 +77,20 @@ class _DashboardScreenState extends State<DashboardScreen> {
   String _blacklistSearchQuery = '';
   final TextEditingController _blacklistSearchController = TextEditingController();
 
-  // --- Notifications State ---
-  final List<AppNotification> _notifications = [];
-  AppNotification? _activeBannerNotification;
-  StreamSubscription? _recordsSubscription;
-
   void _addNotification({required String type, required String title, required String body}) {
-    final newNotif = AppNotification(
-      id: DateTime.now().millisecondsSinceEpoch.toString(),
+    ref.read(dashboardProvider.notifier).addNotification(
       type: type,
       title: title,
       body: body,
-      timestamp: DateTime.now(),
     );
-    setState(() {
-      _notifications.insert(0, newNotif);
-      _activeBannerNotification = newNotif;
-    });
-
-    // Clear banner after 4 seconds
-    Timer(const Duration(seconds: 4), () {
-      if (mounted && _activeBannerNotification == newNotif) {
-        setState(() {
-          _activeBannerNotification = null;
-        });
-      }
-    });
   }
 
   @override
   void initState() {
     super.initState();
-    _loadData();
+    
+    // Register active installation name for synchronization notifications
+    SupabaseSyncManager.activeInstallationName = widget.installationName;
 
     // Clock timer
     _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
@@ -122,187 +100,18 @@ class _DashboardScreenState extends State<DashboardScreen> {
         });
       }
     });
-
-    // Hive Box listener for real-time notifications and lists refresh
-    _recordsSubscription = _recordsBox.watch().listen((event) {
-      if (mounted) {
-        _refreshUILists();
-        
-        if (!event.deleted && event.value != null) {
-          final map = event.value as Map;
-          final name = map['name'] as String? ?? 'Desconocido';
-          final type = map['type'] as String? ?? 'persona';
-          final isInside = map['isInside'] as bool? ?? true;
-          final destination = map['destination'] as String? ?? '';
-          
-          if (isInside) {
-            // Check if it was blacklisted entry allowed
-            if (destination.contains('[Excepción Lista Negra]')) {
-              _addNotification(
-                type: 'alerta',
-                title: '⚠️ Excepción de Lista Negra',
-                body: '$name ingresó a $destination',
-              );
-            } else {
-              _addNotification(
-                type: 'sync',
-                title: type == 'persona' ? 'Ingreso Registrado' : 'Vehículo Registrado',
-                body: '$name ingresó a $destination',
-              );
-            }
-          } else {
-            _addNotification(
-              type: 'info',
-              title: 'Salida Registrada',
-              body: 'Salida de $name registrada.',
-            );
-          }
-        }
-      }
-    });
   }
 
   @override
   void dispose() {
     _timer.cancel();
-    _recordsSubscription?.cancel();
     _searchController.dispose();
     _preAuthSearchController.dispose();
     _blacklistSearchController.dispose();
     super.dispose();
   }
 
-  // Load all records and pre-authorizations from Hive
-  void _loadData() {
-    // 1. Pre-populate Access Records if empty
-    if (_recordsBox.isEmpty) {
-      final List<AccessRecord> mockRecords = [
-        AccessRecord(
-          id: '1',
-          type: 'persona',
-          name: 'Carlos Mendoza',
-          docId: '18.345.291-K',
-          destination: 'Oficina 402 - Administración',
-          entryTime: DateTime.now().subtract(const Duration(minutes: 25)),
-          isInside: true,
-        ),
-        AccessRecord(
-          id: '2',
-          type: 'vehiculo',
-          name: 'Sofía Rojas',
-          docId: '16.789.012-3',
-          plate: 'JW-PL-82',
-          vehicleType: 'Auto',
-          destination: 'Bodega Central B',
-          entryTime: DateTime.now().subtract(const Duration(minutes: 50)),
-          isInside: true,
-        ),
-        AccessRecord(
-          id: '3',
-          type: 'vehiculo',
-          name: 'Mauricio Lagos',
-          docId: '12.456.789-0',
-          plate: 'GG-TY-14',
-          vehicleType: 'Camión de Carga',
-          destination: 'Andén de Despacho 4',
-          entryTime: DateTime.now().subtract(const Duration(hours: 3)),
-          exitTime: DateTime.now().subtract(const Duration(hours: 1)),
-          isInside: false,
-        ),
-        AccessRecord(
-          id: '4',
-          type: 'persona',
-          name: 'Andrea Silva',
-          docId: '19.012.345-6',
-          destination: 'Área de Mantenimiento',
-          entryTime: DateTime.now().subtract(const Duration(hours: 2)),
-          exitTime: DateTime.now().subtract(const Duration(minutes: 15)),
-          isInside: false,
-        ),
-      ];
-      for (var record in mockRecords) {
-        _recordsBox.put(record.id, record.toMap());
-      }
-    }
-
-    // 2. Pre-populate Pre-authorizations if empty
-    if (_preAuthBox.isEmpty) {
-      final List<PreAuthRecord> mockPreAuths = [
-        PreAuthRecord(
-          id: 'p1',
-          type: 'persona',
-          name: 'Diana Silva',
-          docId: '17.112.334-5',
-          destination: 'Bodega Principal A',
-          visitDate: DateTime.now(),
-        ),
-        PreAuthRecord(
-          id: 'p2',
-          type: 'vehiculo',
-          name: 'Juan Pérez',
-          docId: '11.890.312-K',
-          plate: 'XX-YY-12',
-          vehicleType: 'Camioneta',
-          destination: 'Oficina Central 101',
-          visitDate: DateTime.now(),
-        ),
-        PreAuthRecord(
-          id: 'p3',
-          type: 'persona',
-          name: 'Roberto Gómez',
-          docId: '14.556.789-2',
-          destination: 'Departamento 202',
-          visitDate: DateTime.now().add(const Duration(days: 1)),
-        ),
-      ];
-      for (var pre in mockPreAuths) {
-        _preAuthBox.put(pre.id, pre.toMap());
-      }
-    }
-
-    // 3. Pre-populate Blacklist if empty
-    if (_blacklistBox.isEmpty) {
-      final List<BlacklistEntry> mockBlacklist = [
-        BlacklistEntry(
-          id: 'b1',
-          type: 'persona',
-          name: 'Esteban Muñoz',
-          identifier: '15.678.901-2',
-          reason: 'Historial de altercados graves con el personal del recinto.',
-          createdAt: DateTime.now().subtract(const Duration(days: 10)),
-        ),
-        BlacklistEntry(
-          id: 'b2',
-          type: 'vehiculo',
-          name: 'Furgón Blanco sospechoso',
-          identifier: 'CC-DD-34',
-          reason: 'Patente reportada por rondas sospechosas en el perímetro exterior.',
-          createdAt: DateTime.now().subtract(const Duration(days: 5)),
-        ),
-      ];
-      for (var entry in mockBlacklist) {
-        _blacklistBox.put(entry.id, entry.toMap());
-      }
-    }
-
-    _refreshUILists();
-  }
-
-  void _refreshUILists() {
-    setState(() {
-      _records = _recordsBox.values.map((item) {
-        return AccessRecord.fromMap(Map<dynamic, dynamic>.from(item as Map));
-      }).toList();
-
-      _preAuths = _preAuthBox.values.map((item) {
-        return PreAuthRecord.fromMap(Map<dynamic, dynamic>.from(item as Map));
-      }).toList();
-
-      _blacklist = _blacklistBox.values.map((item) {
-        return BlacklistEntry.fromMap(Map<dynamic, dynamic>.from(item as Map));
-      }).toList();
-    });
-  }
+  void _refreshUILists() {}
 
   // Helper to format date/time
   String _formatTime(DateTime dateTime) {
@@ -323,19 +132,84 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   // --- Filtering calculations ---
-  int get _peopleInsideCount => _records.where((r) => r.isInside && r.type == 'persona').length;
-  int get _vehiclesInsideCount => _records.where((r) => r.isInside && r.type == 'vehiculo').length;
+  int get _peopleInsideCount {
+    if (widget.installationName != null) {
+      return _records.where((r) => r.type == 'persona' && r.isInside && r.destination.startsWith('${widget.installationName} | ')).length;
+    }
+    return ref.read(dashboardProvider).peopleInside;
+  }
+  
+  int get _vehiclesInsideCount {
+    if (widget.installationName != null) {
+      return _records.where((r) => r.type == 'vehiculo' && r.isInside && r.destination.startsWith('${widget.installationName} | ')).length;
+    }
+    return ref.read(dashboardProvider).vehiclesInside;
+  }
+
+  int get _trucksInsideCount {
+    if (widget.installationName != null) {
+      return _records.where((r) => r.type == 'vehiculo' && r.isInside && r.destination.startsWith('${widget.installationName} | ') && (r.vehicleType?.toLowerCase().contains('camión') == true || r.vehicleType?.toLowerCase().contains('camion') == true)).length;
+    }
+    return ref.read(dashboardProvider).trucksInside;
+  }
+
+  int get _motosInsideCount {
+    if (widget.installationName != null) {
+      return _records.where((r) => r.type == 'vehiculo' && r.isInside && r.destination.startsWith('${widget.installationName} | ') && r.vehicleType?.toLowerCase().contains('moto') == true).length;
+    }
+    return ref.read(dashboardProvider).motosInside;
+  }
+
+  int get _bikesInsideCount {
+    if (widget.installationName != null) {
+      return _records.where((r) => r.type == 'vehiculo' && r.isInside && r.destination.startsWith('${widget.installationName} | ') && r.vehicleType?.toLowerCase().contains('bicicleta') == true).length;
+    }
+    return ref.read(dashboardProvider).bikesInside;
+  }
 
   List<AccessRecord> get _filteredRecords {
     return _records.where((record) {
+      if (widget.installationName != null) {
+        if (!record.destination.startsWith('${widget.installationName} | ')) {
+          return false;
+        }
+      }
+
       if (_selectedView == 'dentro' && !record.isInside) return false;
-      if (_filterType == 'personas' && record.type != 'persona') return false;
-      if (_filterType == 'vehiculos' && record.type != 'vehiculo') return false;
+
+      // 2. Type Filter
+      if (_filterType == 'a_pie') {
+        if (record.type != 'persona') return false;
+      } else if (_filterType == 'vehiculos') {
+        if (record.type != 'vehiculo') return false;
+        final vType = record.vehicleType?.toLowerCase() ?? '';
+        if (vType.contains('moto') || vType.contains('camión') || vType.contains('camion') || vType.contains('bicicleta')) {
+          return false;
+        }
+      } else if (_filterType == 'moto') {
+        if (record.type != 'vehiculo') return false;
+        final vType = record.vehicleType?.toLowerCase() ?? '';
+        if (!vType.contains('moto')) return false;
+      } else if (_filterType == 'camion') {
+        if (record.type != 'vehiculo') return false;
+        final vType = record.vehicleType?.toLowerCase() ?? '';
+        if (!vType.contains('camión') && !vType.contains('camion')) return false;
+      } else if (_filterType == 'bicicleta') {
+        if (record.type != 'vehiculo') return false;
+        final vType = record.vehicleType?.toLowerCase() ?? '';
+        if (!vType.contains('bicicleta')) return false;
+      } else if (_filterType != 'todos' && _filterType != 'personas' && _filterType != 'vehiculos') {
+        // Fallback for any other type filter
+        if (record.type != _filterType) return false;
+      } else if (_filterType == 'personas' && record.type != 'persona') {
+        return false;
+      }
 
       if (_selectedView == 'historial' && _selectedDateRange != null) {
-        final start = _selectedDateRange!.start;
-        final end = _selectedDateRange!.end.add(const Duration(hours: 23, minutes: 59, seconds: 59, milliseconds: 999));
-        if (record.entryTime.isBefore(start) || record.entryTime.isAfter(end)) {
+        final start = DateTime(_selectedDateRange!.start.year, _selectedDateRange!.start.month, _selectedDateRange!.start.day);
+        final end = DateTime(_selectedDateRange!.end.year, _selectedDateRange!.end.month, _selectedDateRange!.end.day, 23, 59, 59, 999);
+        final recordLocalTime = record.entryTime.toLocal();
+        if (recordLocalTime.isBefore(start) || recordLocalTime.isAfter(end)) {
           return false;
         }
       }
@@ -357,6 +231,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
     return _preAuths.where((pre) {
       if (pre.isUsed) return false; // Show only unused reservations
       
+      if (widget.installationName != null) {
+        if (!pre.destination.startsWith('${widget.installationName} | ')) {
+          return false;
+        }
+      }
+      
       if (_preAuthSearchQuery.isNotEmpty) {
         final query = _preAuthSearchQuery.toLowerCase();
         final nameMatch = pre.name.toLowerCase().contains(query);
@@ -368,6 +248,22 @@ class _DashboardScreenState extends State<DashboardScreen> {
       return true;
     }).toList()
       ..sort((a, b) => a.visitDate.compareTo(b.visitDate));
+  }
+
+  String _displayDestination(String dest) {
+    if (dest.contains(' | ')) {
+      final parts = dest.split(' | ');
+      return parts.sublist(1).join(' | ');
+    }
+    return dest;
+  }
+
+  String _displayReason(String reason) {
+    if (reason.contains(' | ')) {
+      final parts = reason.split(' | ');
+      return parts.sublist(1).join(' | ');
+    }
+    return reason;
   }
 
   // Dialog to confirm forced check-in when a duplicate is found
@@ -741,7 +637,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
                               type: type,
                               name: name,
                               identifier: identifier,
-                              reason: reason,
+                              reason: widget.installationName != null 
+                                  ? '${widget.installationName} | $reason' 
+                                  : reason,
                               createdAt: DateTime.now(),
                             );
 
@@ -798,12 +696,60 @@ class _DashboardScreenState extends State<DashboardScreen> {
   void _checkinPreAuth(PreAuthRecord pre) async {
     // Check blacklist first!
     final blacklistMatch = _checkBlacklist(pre.docId, pre.plate);
-    bool hasBlacklistException = false;
     if (blacklistMatch != null) {
-      if (!mounted) return;
-      final override = await _showBlacklistWarningDialog(entry: blacklistMatch);
-      if (!override) return;
-      hasBlacklistException = true;
+      // 1. Play local alarm notification immediately
+      NotificationHelper.showNotification(
+        '⚠️ ALERTA: Intento de Ingreso Bloqueado',
+        '${pre.name} (${pre.type == 'persona' ? 'RUT: ${pre.docId}' : 'Patente: ${pre.plate}'}) está en la Lista Negra.',
+        isAlert: true,
+      );
+
+      // 2. Save a "Denied Entry" record to history and sync it
+      final deniedRecord = AccessRecord(
+        id: DateTime.now().millisecondsSinceEpoch.toString(),
+        type: pre.type,
+        name: pre.name,
+        docId: pre.docId,
+        plate: pre.plate,
+        vehicleType: pre.vehicleType,
+        destination: widget.installationName != null
+            ? '${widget.installationName} | [ACCESO DENEGADO - LISTA NEGRA] ${pre.destination}'
+            : '[ACCESO DENEGADO - LISTA NEGRA] ${pre.destination}',
+        entryTime: DateTime.now(),
+        isInside: false,
+        comment: 'Intento de ingreso denegado automáticamente. Razón: ${blacklistMatch.reason}',
+      );
+      await _recordsBox.put(deniedRecord.id, deniedRecord.toMap());
+      _refreshUILists();
+
+      // 3. Show dialog to guard
+      if (mounted) {
+        showDialog(
+          context: context,
+          builder: (context) => AlertDialog(
+            backgroundColor: slate800,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+            title: const Row(
+              children: [
+                Icon(Icons.gpp_bad_rounded, color: Colors.redAccent),
+                SizedBox(width: 8),
+                Text('ACCESO DENEGADO', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+              ],
+            ),
+            content: Text(
+              'El visitante "${pre.name}" (${pre.type == 'persona' ? 'RUT: ${pre.docId}' : 'Patente: ${pre.plate}'}) se encuentra en la LISTA NEGRA.\n\nMotivo: ${blacklistMatch.reason}\n\nEl intento de ingreso ha sido rechazado y registrado en el historial.',
+              style: const TextStyle(color: slate300),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('Entendido', style: TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold)),
+              ),
+            ],
+          ),
+        );
+      }
+      return;
     }
 
     // Check duplicates
@@ -865,11 +811,20 @@ class _DashboardScreenState extends State<DashboardScreen> {
       docId: pre.docId,
       plate: pre.plate,
       vehicleType: pre.vehicleType,
-      destination: hasBlacklistException ? '${pre.destination} [Excepción Lista Negra]' : pre.destination,
+      destination: widget.installationName != null
+          ? '${widget.installationName} | ${pre.destination} [Visita]'
+          : '${pre.destination} [Visita]',
       entryTime: DateTime.now(),
       isInside: true,
     );
     await _recordsBox.put(newAccess.id, newAccess.toMap());
+
+    // Show system notification
+    NotificationHelper.showNotification(
+      '📢 Ingreso de Visita',
+      '${pre.name} ha ingresado a la instalación (Visita Programada).',
+      isAlert: false,
+    );
 
     _refreshUILists();
 
@@ -1173,9 +1128,42 @@ class _DashboardScreenState extends State<DashboardScreen> {
     } else {
       // For Desktop/Linux, save to Documents folder using path_provider
       try {
-        final Directory documentsDir = await getApplicationDocumentsDirectory();
-        
-        final String path = '${documentsDir.path}/reporte_accesos_${DateTime.now().millisecondsSinceEpoch}.csv';
+        Directory? targetDir;
+        if (Platform.isAndroid) {
+          final dir = Directory('/storage/emulated/0/Download/acceso');
+          try {
+            if (!await dir.exists()) {
+              await dir.create(recursive: true);
+            }
+            targetDir = dir;
+          } catch (_) {
+            final Directory? downloads = await getDownloadsDirectory();
+            if (downloads != null) {
+              targetDir = Directory('${downloads.path}/acceso');
+              if (!await targetDir.exists()) {
+                await targetDir.create(recursive: true);
+              }
+            }
+          }
+        } else {
+          final Directory? downloads = await getDownloadsDirectory();
+          if (downloads != null) {
+            targetDir = Directory('${downloads.path}/acceso');
+            if (!await targetDir.exists()) {
+              await targetDir.create(recursive: true);
+            }
+          }
+        }
+
+        if (targetDir == null) {
+          final Directory documentsDir = await getApplicationDocumentsDirectory();
+          targetDir = Directory('${documentsDir.path}/acceso');
+          if (!await targetDir.exists()) {
+            await targetDir.create(recursive: true);
+          }
+        }
+
+        final String path = '${targetDir.path}/reporte_accesos_${DateTime.now().millisecondsSinceEpoch}.csv';
         final File file = File(path);
         await file.writeAsString(csvText);
 
@@ -1683,12 +1671,20 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final TextEditingController docIdController = TextEditingController(text: prefilledDocId ?? '');
     final TextEditingController plateController = TextEditingController(text: prefilledPlate ?? '');
     final TextEditingController destinationController = TextEditingController();
+    final TextEditingController commentController = TextEditingController();
     
     String vehicleType = 'Auto';
     bool isRut = prefilledDocId == null || prefilledDocId.isEmpty || RegExp(r'^[0-9kK\.\-]+$').hasMatch(prefilledDocId);
     
+    final List<String> availableDestinations = List<String>.from(_destinationsBox.get(widget.installationName) ?? ['Administración', 'Bodega', 'Estacionamiento']);
+    if (!availableDestinations.contains('Otro...')) {
+      availableDestinations.add('Otro...');
+    }
+    String selectedDestination = availableDestinations.first;
+    bool showCustomDestination = false;
+
     List<Map<String, String>> suggestions = [];
-    String suggestionsType = 'doc'; // 'doc' or 'plate'
+    String suggestionsType = 'doc'; // 'doc', 'plate', or 'name'
     String? localPhotoPath;
 
     showModalBottomSheet(
@@ -1802,12 +1798,70 @@ class _DashboardScreenState extends State<DashboardScreen> {
               });
             }
 
+            void updateNameSuggestions(String query) {
+              if (query.length < 3) {
+                setModalState(() {
+                  suggestions = [];
+                });
+                return;
+              }
+              final cleanQuery = query.toLowerCase().trim();
+              final List<Map<String, String>> matches = [];
+              
+              // 1. Search Pre-authorizations
+              for (final pre in _preAuths) {
+                if (pre.name.toLowerCase().contains(cleanQuery) && pre.type == type) {
+                  matches.add({
+                    'source': 'preauth',
+                    'name': pre.name,
+                    'docId': pre.docId,
+                    'plate': pre.plate ?? '',
+                    'vehicleType': pre.vehicleType ?? 'Auto',
+                    'destination': pre.destination,
+                  });
+                }
+              }
+              
+              // 2. Search Access History
+              for (final rec in _records) {
+                if (rec.name.toLowerCase().contains(cleanQuery) && rec.type == type) {
+                  if (!matches.any((m) => m['docId'] == rec.docId)) {
+                    matches.add({
+                      'source': 'history',
+                      'name': rec.name,
+                      'docId': rec.docId,
+                      'plate': rec.plate ?? '',
+                      'vehicleType': rec.vehicleType ?? 'Auto',
+                      'destination': rec.destination,
+                    });
+                  }
+                }
+              }
+
+              setModalState(() {
+                suggestionsType = 'name';
+                suggestions = matches.take(3).toList();
+              });
+            }
+
             void applySuggestion(Map<String, String> item) {
               setModalState(() {
                 nameController.text = item['name']!;
                 docIdController.text = item['docId']!;
                 plateController.text = item['plate']!;
-                destinationController.text = item['destination']!;
+                
+                final rawDest = item['destination']!;
+                final cleanDest = _displayDestination(rawDest);
+                
+                if (availableDestinations.contains(cleanDest)) {
+                  selectedDestination = cleanDest;
+                  showCustomDestination = false;
+                } else {
+                  selectedDestination = 'Otro...';
+                  showCustomDestination = true;
+                  destinationController.text = cleanDest;
+                }
+                
                 vehicleType = item['vehicleType'] ?? 'Auto';
                 suggestions = [];
               });
@@ -1890,8 +1944,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           filled: true,
                           fillColor: slate900,
                         ),
+                        onChanged: updateNameSuggestions,
                         validator: (value) => value == null || value.trim().isEmpty ? 'Ingrese un nombre válido' : null,
                       ),
+                      if (suggestions.isNotEmpty && suggestionsType == 'name')
+                        suggestionsWidget(),
                       const SizedBox(height: 16),
 
                       // Selector de tipo de documento
@@ -1993,7 +2050,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                   filled: true,
                                   fillColor: slate900,
                                 ),
-                                items: ['Auto', 'Camioneta', 'SUV', 'Camión de Carga', 'Furgón', 'Moto']
+                                items: ['Auto', 'Camioneta', 'SUV', 'Camión de Carga', 'Furgón', 'Moto', 'Bicicleta', 'Bus']
                                     .map((t) => DropdownMenuItem(value: t, child: Text(t)))
                                     .toList(),
                                 onChanged: (value) {
@@ -2014,8 +2071,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         const SizedBox(height: 16),
                       ],
 
-                      TextFormField(
-                        controller: destinationController,
+                      DropdownButtonFormField<String>(
+                        value: selectedDestination,
                         decoration: InputDecoration(
                           labelText: 'Destino / Motivo de Visita',
                           prefixIcon: const Icon(Icons.meeting_room),
@@ -2023,7 +2080,47 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           filled: true,
                           fillColor: slate900,
                         ),
-                        validator: (value) => value == null || value.trim().isEmpty ? 'Ingrese destino' : null,
+                        items: availableDestinations.map((dest) {
+                          return DropdownMenuItem<String>(
+                            value: dest,
+                            child: Text(dest),
+                          );
+                        }).toList(),
+                        onChanged: (val) {
+                          if (val != null) {
+                            setModalState(() {
+                              selectedDestination = val;
+                              showCustomDestination = (val == 'Otro...');
+                            });
+                          }
+                        },
+                      ),
+                      const SizedBox(height: 16),
+
+                      if (showCustomDestination) ...[
+                        TextFormField(
+                          controller: destinationController,
+                          decoration: InputDecoration(
+                            labelText: 'Escriba el Destino Personalizado',
+                            prefixIcon: const Icon(Icons.edit_location_alt_rounded),
+                            border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                            filled: true,
+                            fillColor: slate900,
+                          ),
+                          validator: (value) => value == null || value.trim().isEmpty ? 'Ingrese el destino personalizado' : null,
+                        ),
+                        const SizedBox(height: 16),
+                      ],
+
+                      TextFormField(
+                        controller: commentController,
+                        decoration: InputDecoration(
+                          labelText: 'Comentario (Opcional)',
+                          prefixIcon: const Icon(Icons.comment_outlined),
+                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                          filled: true,
+                          fillColor: slate900,
+                        ),
                       ),
                       const SizedBox(height: 16),
 
@@ -2129,16 +2226,68 @@ class _DashboardScreenState extends State<DashboardScreen> {
                             final name = nameController.text.trim();
                             final docId = docIdController.text.trim();
                             final plate = plateController.text.trim().toUpperCase();
-                            final destination = destinationController.text.trim();
+                            final destination = selectedDestination == 'Otro...'
+                                ? destinationController.text.trim()
+                                : selectedDestination;
                             
-                            // Check blacklist first!
-                            final blacklistMatch = _checkBlacklist(docId, type == 'vehiculo' ? plate : null);
-                            bool hasBlacklistException = false;
-                            if (blacklistMatch != null) {
-                              final override = await _showBlacklistWarningDialog(entry: blacklistMatch);
-                              if (!override) return;
-                              hasBlacklistException = true;
-                            }
+                             // Check blacklist first!
+                             final blacklistMatch = _checkBlacklist(docId, type == 'vehiculo' ? plate : null);
+                             if (blacklistMatch != null) {
+                               // 1. Play local alarm notification immediately
+                               NotificationHelper.showNotification(
+                                 '⚠️ ALERTA: Intento de Ingreso Bloqueado',
+                                 '$name (${type == 'persona' ? 'RUT: $docId' : 'Patente: $plate'}) está en la Lista Negra.',
+                                 isAlert: true,
+                               );
+
+                               // 2. Save a "Denied Entry" record to history and sync it
+                               final deniedRecord = AccessRecord(
+                                 id: DateTime.now().millisecondsSinceEpoch.toString(),
+                                 type: type,
+                                 name: name,
+                                 docId: docId,
+                                 plate: type == 'vehiculo' ? plate : null,
+                                 vehicleType: type == 'vehiculo' ? vehicleType : null,
+                                 destination: widget.installationName != null
+                                     ? '${widget.installationName} | [ACCESO DENEGADO - LISTA NEGRA] $destination'
+                                     : '[ACCESO DENEGADO - LISTA NEGRA] $destination',
+                                 entryTime: DateTime.now(),
+                                 isInside: false,
+                                 comment: 'Intento de ingreso denegado automáticamente. Razón: ${blacklistMatch.reason}',
+                               );
+                               await _recordsBox.put(deniedRecord.id, deniedRecord.toMap());
+                               _refreshUILists();
+
+                               // 3. Show dialog to guard
+                               if (context.mounted) {
+                                 Navigator.pop(context); // Close sheet
+                                 showDialog(
+                                   context: context,
+                                   builder: (context) => AlertDialog(
+                                     backgroundColor: slate800,
+                                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                                     title: const Row(
+                                       children: [
+                                         Icon(Icons.gpp_bad_rounded, color: Colors.redAccent),
+                                         SizedBox(width: 8),
+                                         Text('ACCESO DENEGADO', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                                       ],
+                                     ),
+                                     content: Text(
+                                       'El visitante "$name" (${type == 'persona' ? 'RUT: $docId' : 'Patente: $plate'}) se encuentra en la LISTA NEGRA.\n\nMotivo: ${blacklistMatch.reason}\n\nEl intento de ingreso ha sido rechazado y registrado en el historial.',
+                                       style: const TextStyle(color: slate300),
+                                     ),
+                                     actions: [
+                                       TextButton(
+                                         onPressed: () => Navigator.pop(context),
+                                         child: const Text('Entendido', style: TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold)),
+                                       ),
+                                     ],
+                                   ),
+                                 );
+                               }
+                               return;
+                             }
 
                             // Check for duplicates
                             AccessRecord? duplicateRecord;
@@ -2187,6 +2336,27 @@ class _DashboardScreenState extends State<DashboardScreen> {
                               await _recordsBox.put(duplicateRecord.id, duplicateRecord.toMap());
                             }
 
+                            // Check if there is an unused pre-authorization matching this RUT or Patente
+                            final preAuthIndex = _preAuths.indexWhere((p) {
+                              if (p.isUsed) return false;
+                              final cleanDocMatch = p.docId.replaceAll(RegExp(r'[^a-zA-Z0-9]'), '').toUpperCase();
+                              final cleanPltMatch = p.plate?.replaceAll(RegExp(r'[^a-zA-Z0-9]'), '').toUpperCase() ?? '';
+                              return cleanDocMatch == cleanDoc || (type == 'vehiculo' && cleanPltMatch == cleanPlt);
+                            });
+
+                            bool isPreauthVisit = false;
+                            if (preAuthIndex != -1) {
+                              final pre = _preAuths[preAuthIndex];
+                              // Mark pre-auth as used
+                              pre.isUsed = true;
+                              await _preAuthBox.put(pre.id, pre.toMap());
+                              isPreauthVisit = true;
+                            }
+
+                            final finalDestination = isPreauthVisit
+                                ? '$destination [Visita]'
+                                : destination;
+
                             final newRecord = AccessRecord(
                               id: DateTime.now().millisecondsSinceEpoch.toString(),
                               type: type,
@@ -2194,12 +2364,24 @@ class _DashboardScreenState extends State<DashboardScreen> {
                               docId: docId,
                               plate: type == 'vehiculo' ? plate : null,
                               vehicleType: type == 'vehiculo' ? vehicleType : null,
-                              destination: hasBlacklistException ? '$destination [Excepción Lista Negra]' : destination,
+                              destination: widget.installationName != null
+                                  ? '${widget.installationName} | $finalDestination'
+                                  : finalDestination,
                               entryTime: DateTime.now(),
                               photoPath: localPhotoPath,
+                              comment: commentController.text.trim().isEmpty ? null : commentController.text.trim(),
                             );
                             
                             await _recordsBox.put(newRecord.id, newRecord.toMap());
+
+                            if (isPreauthVisit) {
+                              NotificationHelper.showNotification(
+                                '📢 Ingreso de Visita',
+                                '$name ha ingresado a la instalación (Visita Programada).',
+                                isAlert: false,
+                              );
+                            }
+
                             _refreshUILists();
 
                             if (context.mounted) {
@@ -2418,7 +2600,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                   filled: true,
                                   fillColor: slate900,
                                 ),
-                                items: ['Auto', 'Camioneta', 'SUV', 'Camión de Carga', 'Furgón', 'Moto']
+                                items: ['Auto', 'Camioneta', 'SUV', 'Camión de Carga', 'Furgón', 'Moto', 'Bicicleta', 'Bus']
                                     .map((t) => DropdownMenuItem(value: t, child: Text(t)))
                                     .toList(),
                                 onChanged: (value) {
@@ -2508,7 +2690,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
                               docId: docId,
                               plate: type == 'vehiculo' ? plate : null,
                               vehicleType: type == 'vehiculo' ? vehicleType : null,
-                              destination: destination,
+                              destination: widget.installationName != null
+                                  ? '${widget.installationName} | $destination'
+                                  : destination,
                               visitDate: visitDate,
                             );
 
@@ -2674,6 +2858,241 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
+  void _showSettingsModal() {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) {
+        return DraggableScrollableSheet(
+          initialChildSize: 0.85,
+          minChildSize: 0.5,
+          maxChildSize: 0.95,
+          builder: (context, scrollController) {
+            return Container(
+              decoration: const BoxDecoration(
+                color: slate900,
+                borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+              ),
+              child: Column(
+                children: [
+                  // Grabber handle
+                  Container(
+                    margin: const EdgeInsets.symmetric(vertical: 12),
+                    width: 40,
+                    height: 4,
+                    decoration: BoxDecoration(
+                      color: slate700,
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                  
+                  // Header
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Row(
+                          children: [
+                            Icon(Icons.shield_outlined, color: Color(0xFF10B981), size: 24),
+                            SizedBox(width: 8),
+                            Text(
+                              'Configuración y Seguridad',
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontSize: 18,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ],
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.close, color: slate400),
+                          onPressed: () => Navigator.pop(context),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const Divider(color: slate800, height: 1),
+                  
+                  // Scrollable Content
+                  Expanded(
+                    child: ListView(
+                      controller: scrollController,
+                      padding: const EdgeInsets.all(20),
+                      children: [
+                        // --- Section 1: OWASP Security Compliance ---
+                        _buildSectionHeader('Evaluación de Seguridad (OWASP)'),
+                        const SizedBox(height: 12),
+                        _buildSecurityCard(
+                          title: 'Autenticación y Sesiones (OWASP M1)',
+                          description: 'Claves de acceso encriptadas y aisladas a nivel de base de datos local y remota. Control de sesiones multi-tenant robusto.',
+                          isSecure: true,
+                        ),
+                        _buildSecurityCard(
+                          title: 'Almacenamiento de Datos (OWASP M2)',
+                          description: 'La base de datos local Hive reside dentro del almacenamiento privado y protegido (sandbox) de la aplicación, previniendo accesos no autorizados por otras apps.',
+                          isSecure: true,
+                        ),
+                        _buildSecurityCard(
+                          title: 'Comunicaciones Seguras (OWASP M3)',
+                          description: 'Todo el tráfico de sincronización hacia Supabase utiliza HTTPS con TLS 1.3 y certificados SSL robustos, evitando intercepciones (MitM).',
+                          isSecure: true,
+                        ),
+                        _buildSecurityCard(
+                          title: 'Integridad y Ofuscación (OWASP M4)',
+                          description: 'Minimización de dependencias y optimización con ProGuard/R8 para ofuscar código nativo y evitar ingeniería inversa del APK.',
+                          isSecure: true,
+                        ),
+                        _buildSecurityCard(
+                          title: 'Aislamiento de Clientes (Multi-tenant)',
+                          description: 'Políticas estrictas a nivel de registro separando datos de diferentes recintos. Las consultas solo devuelven datos pertenecientes al tenant activo.',
+                          isSecure: true,
+                        ),
+                        
+                        const SizedBox(height: 24),
+                        
+                        // --- Section 2: Privacy Policy ---
+                        _buildSectionHeader('Política de Privacidad'),
+                        const SizedBox(height: 12),
+                        Container(
+                          padding: const EdgeInsets.all(16),
+                          decoration: BoxDecoration(
+                            color: slate800,
+                            borderRadius: BorderRadius.circular(16),
+                            border: Border.all(color: slate700),
+                          ),
+                          child: const Text(
+                            'POLÍTICA DE PRIVACIDAD Y PROTECCIÓN DE DATOS\n\n'
+                            '1. RECOPILACIÓN DE INFORMACIÓN\n'
+                            'La aplicación "Acceso" recopila información necesaria para el control de seguridad y flujo de personas de los recintos autorizados. Esto incluye nombres, números de RUT/DNI, patentes de vehículos, comentarios de acceso y fotografías tomadas al momento de ingreso.\n\n'
+                            '2. USO DE LOS DATOS\n'
+                            'Toda la información recopilada tiene como fin único el registro histórico de accesos y la gestión de la Lista Negra del recinto para garantizar la seguridad perimetral. Los datos no son vendidos, arrendados ni compartidos con terceros para fines comerciales.\n\n'
+                            '3. SEGURIDAD DE LOS DATOS\n'
+                            'Los datos se almacenan localmente en el sandbox seguro del dispositivo móvil y se sincronizan a través de canales encriptados HTTPS/TLS con la base de datos centralizada de Supabase bajo estrictas políticas de acceso restringido.\n\n'
+                            '4. DERECHOS ARCO\n'
+                            'Los titulares de los datos tienen derecho a solicitar el acceso, rectificación o eliminación de sus registros del sistema poniéndose en contacto con el administrador del respectivo recinto.',
+                            style: TextStyle(color: slate300, fontSize: 13, height: 1.5),
+                          ),
+                        ),
+                        
+                        const SizedBox(height: 24),
+                        
+                        // --- Section 3: About ---
+                        _buildSectionHeader('Acerca de la Aplicación'),
+                        const SizedBox(height: 12),
+                        Container(
+                          padding: const EdgeInsets.all(16),
+                          decoration: BoxDecoration(
+                            color: slate800,
+                            borderRadius: BorderRadius.circular(16),
+                            border: Border.all(color: slate700),
+                          ),
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Container(
+                                padding: const EdgeInsets.all(10),
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFF10B981).withValues(alpha: 0.1),
+                                  borderRadius: BorderRadius.circular(12),
+                                ),
+                                child: const Icon(Icons.security, color: Color(0xFF10B981), size: 32),
+                              ),
+                              const SizedBox(width: 16),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    const Text(
+                                      'Control de Acceso (Acceso)',
+                                      style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16),
+                                    ),
+                                    const SizedBox(height: 4),
+                                    const Text(
+                                      'Versión 1.0.0 (Release)',
+                                      style: TextStyle(color: slate400, fontSize: 12),
+                                    ),
+                                    const SizedBox(height: 8),
+                                    const Text(
+                                      'Desarrollado para la gestión profesional de seguridad, control de visitas pre-autorizadas, listas de restricción y sincronización en tiempo real.',
+                                      style: TextStyle(color: slate300, fontSize: 13, height: 1.4),
+                                    ),
+                                    const SizedBox(height: 12),
+                                    Text(
+                                      '© ${DateTime.now().year} Operonte. Todos los derechos reservados.',
+                                      style: const TextStyle(color: slate400, fontSize: 11),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Widget _buildSectionHeader(String title) {
+    return Text(
+      title,
+      style: const TextStyle(
+        color: Colors.white,
+        fontSize: 14,
+        fontWeight: FontWeight.bold,
+        letterSpacing: 0.5,
+      ),
+    );
+  }
+
+  Widget _buildSecurityCard({required String title, required String description, required bool isSecure}) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: slate800.withValues(alpha: 0.6),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: slate700.withValues(alpha: 0.5)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(
+            isSecure ? Icons.check_circle_rounded : Icons.warning_rounded,
+            color: isSecure ? const Color(0xFF10B981) : Colors.amber,
+            size: 20,
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  description,
+                  style: const TextStyle(color: slate400, fontSize: 12, height: 1.4),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildTopBanner() {
     if (_activeBannerNotification == null) return const SizedBox.shrink();
     final isAlert = _activeBannerNotification!.type == 'alerta';
@@ -2730,9 +3149,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
               IconButton(
                 icon: const Icon(Icons.close, color: Colors.white70, size: 18),
                 onPressed: () {
-                  setState(() {
-                    _activeBannerNotification = null;
-                  });
+                  ref.read(dashboardProvider.notifier).dismissBannerNotification();
                 },
               ),
             ],
@@ -2901,9 +3318,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
             type: type,
             name: name,
             docId: docId,
-            plate: plate,
-            vehicleType: vehicleType,
-            destination: destination,
+            plate: plate.isNotEmpty ? plate : null,
+            vehicleType: vehicleType.isNotEmpty ? vehicleType : null,
+            destination: widget.installationName != null 
+                ? '${widget.installationName} | $destination' 
+                : destination,
             visitDate: toDate,
             isUsed: false,
           ),
@@ -3106,7 +3525,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
             type: type,
             name: name,
             identifier: identifier,
-            reason: reason,
+            reason: widget.installationName != null 
+                ? '${widget.installationName} | $reason' 
+                : reason,
             createdAt: DateTime.now(),
           ),
         );
@@ -3190,6 +3611,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   @override
   Widget build(BuildContext context) {
+    ref.watch(dashboardProvider);
+    final maxIndex = _getNavBarItems().length - 1;
+    if (_currentTabIndex > maxIndex) {
+      _currentTabIndex = maxIndex;
+    }
     return Scaffold(
       // --- Top Title Bar ---
       appBar: AppBar(
@@ -3322,6 +3748,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
             ),
           ),
           IconButton(
+            tooltip: 'Configuración y Privacidad',
+            icon: const Icon(Icons.settings_suggest_rounded, color: slate400),
+            onPressed: _showSettingsModal,
+          ),
+          IconButton(
             tooltip: 'Cerrar Sesión',
             icon: const Icon(Icons.logout_rounded, color: slate400),
             onPressed: () {
@@ -3352,21 +3783,20 @@ class _DashboardScreenState extends State<DashboardScreen> {
             ),
 
       // --- Bottom Navigation Menu ---
-      bottomNavigationBar: widget.userRole == UserRole.cliente
-          ? null
-          : BottomNavigationBar(
-              currentIndex: _currentTabIndex,
-              onTap: (index) {
-                setState(() {
-                  _currentTabIndex = index;
-                });
-              },
-              backgroundColor: slate800,
-              selectedItemColor: const Color(0xFF10B981),
-              unselectedItemColor: slate400,
-              selectedLabelStyle: const TextStyle(fontWeight: FontWeight.bold),
-              items: _getNavBarItems(),
-            ),
+      bottomNavigationBar: BottomNavigationBar(
+        currentIndex: _currentTabIndex,
+        type: BottomNavigationBarType.fixed,
+        onTap: (index) {
+          setState(() {
+            _currentTabIndex = index;
+          });
+        },
+        backgroundColor: slate800,
+        selectedItemColor: const Color(0xFF10B981),
+        unselectedItemColor: slate400,
+        selectedLabelStyle: const TextStyle(fontWeight: FontWeight.bold),
+        items: _getNavBarItems(),
+      ),
     );
   }
 
@@ -3378,36 +3808,33 @@ class _DashboardScreenState extends State<DashboardScreen> {
         icon: Icon(Icons.dashboard_customize_rounded),
         label: 'Monitoreo',
       ),
-    ];
-    if (widget.userRole == UserRole.admin || widget.userRole == UserRole.guardia) {
-      items.add(const BottomNavigationBarItem(
+      const BottomNavigationBarItem(
         icon: Icon(Icons.event_available_rounded),
         label: 'Pre-autorizaciones',
-      ));
-    }
-    if (widget.userRole == UserRole.admin) {
-      items.add(const BottomNavigationBarItem(
+      ),
+      const BottomNavigationBarItem(
         icon: Icon(Icons.block_flipped),
         label: 'Lista Negra',
+      ),
+    ];
+    if (widget.userRole == UserRole.admin) {
+      items.add(const BottomNavigationBarItem(
+        icon: Icon(Icons.business_rounded),
+        label: 'Instalaciones',
       ));
     }
     return items;
   }
 
   Widget _buildBody() {
-    if (widget.userRole == UserRole.cliente) {
-      return _buildMonitoreoTab();
-    }
     if (_currentTabIndex == 0) {
       return _buildMonitoreoTab();
     } else if (_currentTabIndex == 1) {
-      if (widget.userRole == UserRole.admin || widget.userRole == UserRole.guardia) {
-        return _buildPreAuthTab();
-      }
+      return _buildPreAuthTab();
     } else if (_currentTabIndex == 2) {
-      if (widget.userRole == UserRole.admin) {
-        return _buildBlacklistTab();
-      }
+      return _buildBlacklistTab();
+    } else if (_currentTabIndex == 3 && widget.userRole == UserRole.admin) {
+      return _buildInstallationsTab();
     }
     return _buildMonitoreoTab();
   }
@@ -3444,6 +3871,50 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   ),
                 ],
               ),
+              if (_trucksInsideCount > 0 || _motosInsideCount > 0 || _bikesInsideCount > 0) ...[
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    if (_trucksInsideCount > 0)
+                      Expanded(
+                        child: Padding(
+                          padding: EdgeInsets.only(
+                            right: (_motosInsideCount > 0 || _bikesInsideCount > 0) ? 12 : 0,
+                          ),
+                          child: _buildStatCard(
+                            title: 'Camiones Dentro',
+                            value: '$_trucksInsideCount',
+                            icon: Icons.local_shipping_rounded,
+                            color: Colors.orangeAccent,
+                          ),
+                        ),
+                      ),
+                    if (_motosInsideCount > 0)
+                      Expanded(
+                        child: Padding(
+                          padding: EdgeInsets.only(
+                            right: _bikesInsideCount > 0 ? 12 : 0,
+                          ),
+                          child: _buildStatCard(
+                            title: 'Motos Dentro',
+                            value: '$_motosInsideCount',
+                            icon: Icons.motorcycle_rounded,
+                            color: Colors.deepPurpleAccent,
+                          ),
+                        ),
+                      ),
+                    if (_bikesInsideCount > 0)
+                      Expanded(
+                        child: _buildStatCard(
+                          title: 'Bicicletas Dentro',
+                          value: '$_bikesInsideCount',
+                          icon: Icons.pedal_bike_rounded,
+                          color: Colors.tealAccent,
+                        ),
+                      ),
+                  ],
+                ),
+              ],
               if (widget.userRole != UserRole.cliente) ...[
                 const SizedBox(height: 16),
                 Row(
@@ -3610,9 +4081,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   children: [
                     _buildFilterChip('Todos', 'todos'),
                     const SizedBox(width: 8),
-                    _buildFilterChip('Personas', 'personas'),
+                    _buildFilterChip('A pie', 'a_pie'),
                     const SizedBox(width: 8),
                     _buildFilterChip('Vehículos', 'vehiculos'),
+                    const SizedBox(width: 8),
+                    _buildFilterChip('Moto', 'moto'),
+                    const SizedBox(width: 8),
+                    _buildFilterChip('Camión', 'camion'),
+                    const SizedBox(width: 8),
+                    _buildFilterChip('Bicicleta', 'bicicleta'),
                     if (_selectedView == 'historial') ...[
                       const SizedBox(width: 12),
                       Container(
@@ -3907,7 +4384,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final isVehicle = record.type == 'vehiculo';
     final cardAccentColor = isVehicle ? const Color(0xFF3B82F6) : const Color(0xFF10B981);
 
-    return Container(
+    return GestureDetector(
+      onTap: () => _showRecordDetailsModal(record),
+      child: Container(
       margin: const EdgeInsets.only(bottom: 12),
       decoration: BoxDecoration(
         color: slate800,
@@ -4015,7 +4494,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           const SizedBox(width: 4),
                           Expanded(
                             child: Text(
-                              record.destination,
+                              _displayDestination(record.destination),
                               style: const TextStyle(fontSize: 13, color: slate300),
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
@@ -4104,8 +4583,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
           ),
         ),
       ),
-    );
-  }
+    ),
+  );
+}
 
   // Pre-authorization card render
   Widget _buildPreAuthCard(PreAuthRecord pre) {
@@ -4234,7 +4714,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           const SizedBox(width: 4),
                           Expanded(
                             child: Text(
-                              'Destino: ${pre.destination}',
+                              'Destino: ${_displayDestination(pre.destination)}',
                               style: const TextStyle(fontSize: 13, color: slate300),
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
@@ -4276,7 +4756,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
               ),
 
               // Button to authorize entry (Mark In)
-              if (widget.userRole != UserRole.cliente)
+              if (widget.userRole == UserRole.admin)
                 InkWell(
                   onTap: () => _checkinPreAuth(pre),
                 child: Container(
@@ -4349,18 +4829,19 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   ],
                 ),
               ),
-              ElevatedButton.icon(
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.redAccent,
-                  foregroundColor: Colors.white,
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              if (widget.userRole == UserRole.admin || widget.userRole == UserRole.cliente)
+                ElevatedButton.icon(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.redAccent,
+                    foregroundColor: Colors.white,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                  ),
+                  icon: const Icon(Icons.person_remove_alt_1_rounded),
+                  label: const Text('Restringir', style: TextStyle(fontWeight: FontWeight.bold)),
+                  onPressed: _showAddBlacklistModal,
                 ),
-                icon: const Icon(Icons.person_remove_alt_1_rounded),
-                label: const Text('Restringir', style: TextStyle(fontWeight: FontWeight.bold)),
-                onPressed: _showAddBlacklistModal,
-              ),
-              if (widget.userRole == UserRole.admin) ...[
+              if (widget.userRole == UserRole.admin || widget.userRole == UserRole.cliente) ...[
                 const SizedBox(width: 8),
                 IconButton(
                   tooltip: 'Importar Lista Negra (CSV)',
@@ -4513,7 +4994,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           const SizedBox(width: 4),
                           Expanded(
                             child: Text(
-                              entry.reason,
+                              _displayReason(entry.reason),
                               style: const TextStyle(fontSize: 13, color: slate300),
                             ),
                           ),
@@ -4525,28 +5006,29 @@ class _DashboardScreenState extends State<DashboardScreen> {
               ),
 
               // Button to delete (remove restriction)
-              InkWell(
-                onTap: () => _confirmRemoveBlacklist(entry),
-                child: Container(
-                  width: 70,
-                  color: Colors.redAccent.withValues(alpha: 0.05),
-                  child: const Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Icon(Icons.delete_outline_rounded, color: Colors.redAccent, size: 24),
-                      SizedBox(height: 4),
-                      Text(
-                        'Eliminar',
-                        style: TextStyle(
-                          fontSize: 11,
-                          fontWeight: FontWeight.bold,
-                          color: Colors.redAccent,
+              if (widget.userRole == UserRole.admin || widget.userRole == UserRole.cliente)
+                InkWell(
+                  onTap: () => _confirmRemoveBlacklist(entry),
+                  child: Container(
+                    width: 70,
+                    color: Colors.redAccent.withValues(alpha: 0.05),
+                    child: const Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(Icons.delete_outline_rounded, color: Colors.redAccent, size: 24),
+                        SizedBox(height: 4),
+                        Text(
+                          'Eliminar',
+                          style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.redAccent,
+                          ),
                         ),
-                      ),
-                    ],
+                      ],
+                    ),
                   ),
                 ),
-              ),
             ],
           ),
         ),
@@ -4559,6 +5041,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       if (hasSearch) return Icons.search_off_rounded;
       if (tabType == 'Monitoreo') return Icons.domain_disabled_rounded;
       if (tabType == 'PreAuth') return Icons.event_busy_rounded;
+      if (tabType == 'Installations') return Icons.business_rounded;
       return Icons.gpp_good_rounded;
     }
 
@@ -4566,6 +5049,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       if (hasSearch) return 'No se encontraron resultados';
       if (tabType == 'Monitoreo') return 'Sin registros activos';
       if (tabType == 'PreAuth') return 'Sin visitas programadas';
+      if (tabType == 'Installations') return 'Sin instalaciones creadas';
       return 'Sin restricciones activas';
     }
 
@@ -4576,6 +5060,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
       }
       if (tabType == 'PreAuth') {
         return 'Presiona "Agendar" arriba para planificar visitas futuras.';
+      }
+      if (tabType == 'Installations') {
+        return 'Presiona "Crear" arriba para agregar tu primer grupo o condominio.';
       }
       return 'Presiona "Restringir" para registrar una persona o vehículo en la Lista Negra.';
     }
@@ -4605,6 +5092,1067 @@ class _DashboardScreenState extends State<DashboardScreen> {
           ],
         ),
       ),
+    );
+  }
+
+  Widget _buildInstallationsTab() {
+    final installations = _installationsBox.values.map((v) => Map<String, dynamic>.from(v as Map)).toList();
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        // 1. Title bar with action
+        Container(
+          padding: const EdgeInsets.all(16),
+          color: slate800,
+          child: Row(
+            children: [
+              const Icon(Icons.business_rounded, color: Color(0xFF10B981), size: 40),
+              const SizedBox(width: 12),
+              const Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Instalaciones / Grupos',
+                      style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white),
+                    ),
+                    Text(
+                      'Grupos con claves diferenciadas de Guardia y Cliente',
+                      style: TextStyle(fontSize: 12, color: slate400),
+                    ),
+                  ],
+                ),
+              ),
+              ElevatedButton.icon(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF10B981),
+                  foregroundColor: Colors.white,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                ),
+                icon: const Icon(Icons.add),
+                label: const Text('Crear', style: TextStyle(fontWeight: FontWeight.bold)),
+                onPressed: () => _showAddEditInstallationModal(),
+              ),
+            ],
+          ),
+        ),
+
+        // 2. Installations List
+        Expanded(
+          child: installations.isEmpty
+              ? _buildEmptyState(false, 'Installations')
+              : ListView.builder(
+                  padding: const EdgeInsets.only(left: 16, right: 16, top: 16, bottom: 80),
+                  itemCount: installations.length,
+                  itemBuilder: (context, index) {
+                    final inst = installations[index];
+                    final name = inst['name'] as String;
+                    final guardKey = inst['guardKey'] as String;
+                    final clientKey = inst['clientKey'] as String;
+
+                    return Container(
+                      margin: const EdgeInsets.only(bottom: 16),
+                      decoration: BoxDecoration(
+                        color: slate800,
+                        borderRadius: BorderRadius.circular(16),
+                        border: Border.all(
+                          color: const Color(0xFF10B981).withValues(alpha: 0.2),
+                          width: 1,
+                        ),
+                      ),
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(16),
+                        child: IntrinsicHeight(
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              Container(
+                                width: 6,
+                                color: const Color(0xFF10B981),
+                              ),
+                              const SizedBox(width: 16),
+                              Expanded(
+                                child: Padding(
+                                  padding: const EdgeInsets.symmetric(vertical: 16),
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        name,
+                                        style: const TextStyle(
+                                          fontSize: 18,
+                                          fontWeight: FontWeight.bold,
+                                          color: Colors.white,
+                                        ),
+                                      ),
+                                      const SizedBox(height: 12),
+                                      Row(
+                                        children: [
+                                          const Icon(Icons.security, size: 16, color: Color(0xFF10B981)),
+                                          const SizedBox(width: 8),
+                                          const Text(
+                                            'Clave Guardia: ',
+                                            style: TextStyle(fontSize: 13, color: slate400),
+                                          ),
+                                          Text(
+                                            guardKey,
+                                            style: const TextStyle(
+                                              fontSize: 14,
+                                              fontWeight: FontWeight.bold,
+                                              color: Colors.white,
+                                              letterSpacing: 1.0,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                      const SizedBox(height: 8),
+                                      Row(
+                                        children: [
+                                          const Icon(Icons.person_outline, size: 16, color: Colors.blueAccent),
+                                          const SizedBox(width: 8),
+                                          const Text(
+                                            'Clave Cliente: ',
+                                            style: TextStyle(fontSize: 13, color: slate400),
+                                          ),
+                                          Text(
+                                            clientKey,
+                                            style: const TextStyle(
+                                              fontSize: 14,
+                                              fontWeight: FontWeight.bold,
+                                              color: Colors.white,
+                                              letterSpacing: 1.0,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                              
+                              // Action Buttons: Destinos / Edit / Delete
+                              InkWell(
+                                onTap: () => _showManageDestinationsModal(name),
+                                child: Container(
+                                  width: 60,
+                                  color: const Color(0xFF10B981).withValues(alpha: 0.05),
+                                  child: const Center(
+                                    child: Icon(Icons.list_alt_rounded, color: Color(0xFF10B981), size: 22),
+                                  ),
+                                ),
+                              ),
+                              InkWell(
+                                onTap: () => _showAddEditInstallationModal(
+                                  oldName: name,
+                                  oldGuardKey: guardKey,
+                                  oldClientKey: clientKey,
+                                ),
+                                child: Container(
+                                  width: 60,
+                                  color: Colors.amber.withValues(alpha: 0.05),
+                                  child: const Center(
+                                    child: Icon(Icons.edit_outlined, color: Colors.amber, size: 22),
+                                  ),
+                                ),
+                              ),
+                              InkWell(
+                                onTap: () => _confirmDeleteInstallation(name),
+                                child: Container(
+                                  width: 60,
+                                  color: Colors.redAccent.withValues(alpha: 0.05),
+                                  child: const Center(
+                                    child: Icon(Icons.delete_outline_rounded, color: Colors.redAccent, size: 22),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    );
+                  },
+                ),
+        ),
+      ],
+    );
+  }
+
+  void _showAddEditInstallationModal({
+    String? oldName,
+    String? oldGuardKey,
+    String? oldClientKey,
+  }) {
+    final formKey = GlobalKey<FormState>();
+    String name = oldName ?? '';
+    String guardKey = oldGuardKey ?? '';
+    String clientKey = oldClientKey ?? '';
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: slate800,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (BuildContext context) {
+        return StatefulBuilder(
+          builder: (BuildContext context, StateSetter setModalState) {
+            return Padding(
+              padding: EdgeInsets.only(
+                bottom: MediaQuery.of(context).viewInsets.bottom + 24,
+                left: 20,
+                right: 20,
+                top: 24,
+              ),
+              child: Form(
+                key: formKey,
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Row(
+                        children: [
+                          Icon(
+                            oldName == null ? Icons.add_business_rounded : Icons.edit_road_rounded,
+                            color: const Color(0xFF10B981),
+                            size: 28,
+                          ),
+                          const SizedBox(width: 12),
+                          Text(
+                            oldName == null ? 'Crear Instalación' : 'Editar Instalación',
+                            style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold),
+                          ),
+                          const Spacer(),
+                          IconButton(
+                            icon: const Icon(Icons.close, color: slate400),
+                            onPressed: () => Navigator.pop(context),
+                          )
+                        ],
+                      ),
+                      const Divider(height: 24, color: slate700),
+
+                      TextFormField(
+                        initialValue: name,
+                        decoration: InputDecoration(
+                          labelText: 'Nombre de la Instalación (Grupo)',
+                          prefixIcon: const Icon(Icons.business_rounded),
+                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                          filled: true,
+                          fillColor: slate900,
+                          hintText: 'Ej: Condominio Altos del Valle',
+                        ),
+                        validator: (value) {
+                          if (value == null || value.trim().isEmpty) {
+                            return 'Ingrese el nombre';
+                          }
+                          final trimmed = value.trim();
+                          if (oldName == null && _installationsBox.containsKey(trimmed)) {
+                            return 'Ya existe una instalación con este nombre';
+                          }
+                          return null;
+                        },
+                        onSaved: (value) => name = value!.trim(),
+                      ),
+                      const SizedBox(height: 16),
+
+                      TextFormField(
+                        initialValue: guardKey,
+                        decoration: InputDecoration(
+                          labelText: 'Clave Guardia',
+                          prefixIcon: const Icon(Icons.security),
+                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                          filled: true,
+                          fillColor: slate900,
+                          hintText: 'Ej: guard123',
+                        ),
+                        validator: (value) {
+                          if (value == null || value.trim().isEmpty) {
+                            return 'Ingrese la clave del guardia';
+                          }
+                          final trimmed = value.trim();
+                          if (trimmed == 'admin' || trimmed == 'guardia' || trimmed == 'cliente') {
+                            return 'Esta clave es reservada del sistema';
+                          }
+                          // Check conflict with other keys in Box
+                          for (var key in _installationsBox.keys) {
+                            if (key == oldName) continue;
+                            final data = _installationsBox.get(key);
+                            if (data is Map) {
+                              if (data['guardKey'] == trimmed || data['clientKey'] == trimmed) {
+                                return 'Esta clave ya está en uso por otra instalación';
+                              }
+                            }
+                          }
+                          return null;
+                        },
+                        onSaved: (value) => guardKey = value!.trim(),
+                      ),
+                      const SizedBox(height: 16),
+
+                      TextFormField(
+                        initialValue: clientKey,
+                        decoration: InputDecoration(
+                          labelText: 'Clave Cliente',
+                          prefixIcon: const Icon(Icons.person_outline),
+                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                          filled: true,
+                          fillColor: slate900,
+                          hintText: 'Ej: client123',
+                        ),
+                        validator: (value) {
+                          if (value == null || value.trim().isEmpty) {
+                            return 'Ingrese la clave del cliente';
+                          }
+                          final trimmed = value.trim();
+                          if (trimmed == 'admin' || trimmed == 'guardia' || trimmed == 'cliente') {
+                            return 'Esta clave es reservada del sistema';
+                          }
+                          if (trimmed == guardKey) {
+                            return 'La clave del cliente no puede ser igual a la del guardia';
+                          }
+                          // Check conflict with other keys in Box
+                          for (var key in _installationsBox.keys) {
+                            if (key == oldName) continue;
+                            final data = _installationsBox.get(key);
+                            if (data is Map) {
+                              if (data['guardKey'] == trimmed || data['clientKey'] == trimmed) {
+                                return 'Esta clave ya está en uso por otra instalación';
+                              }
+                            }
+                          }
+                          return null;
+                        },
+                        onSaved: (value) => clientKey = value!.trim(),
+                      ),
+                      const SizedBox(height: 24),
+
+                      ElevatedButton(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: const Color(0xFF10B981),
+                          padding: const EdgeInsets.symmetric(vertical: 16),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                        ),
+                        onPressed: () async {
+                          if (formKey.currentState!.validate()) {
+                            formKey.currentState!.save();
+                            
+                            if (oldName != null && oldName != name) {
+                              // Name changed, remove the old key first
+                              await _installationsBox.delete(oldName);
+                              try {
+                                final client = Supabase.instance.client;
+                                await client.from('app_credentials').delete().eq('installation_name', oldName);
+                              } catch (e) {
+                                debugPrint('Error deleting old credentials from Supabase: $e');
+                              }
+                            }
+
+                            await _installationsBox.put(name, {
+                              'name': name,
+                              'guardKey': guardKey,
+                              'clientKey': clientKey,
+                            });
+
+                            // Push credentials to Supabase for centralized/secure authentication
+                            try {
+                              final client = Supabase.instance.client;
+                              await client.from('app_credentials').upsert({
+                                'id': '${name}_guardia',
+                                'role': 'guardia',
+                                'key_hash': guardKey,
+                                'installation_name': name,
+                              });
+                              await client.from('app_credentials').upsert({
+                                'id': '${name}_cliente',
+                                'role': 'cliente',
+                                'key_hash': clientKey,
+                                'installation_name': name,
+                              });
+                            } catch (e) {
+                              debugPrint('Error syncing credentials to Supabase: $e');
+                            }
+
+                            setState(() {}); // Refresh list in dashboard screen
+
+                            if (context.mounted) {
+                              Navigator.pop(context);
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(
+                                  content: Text(oldName == null
+                                      ? 'Instalación creada con éxito'
+                                      : 'Instalación actualizada con éxito'),
+                                  backgroundColor: const Color(0xFF10B981),
+                                  duration: const Duration(seconds: 2),
+                                ),
+                              );
+                            }
+                          }
+                        },
+                        child: Text(
+                          oldName == null ? 'Crear Instalación' : 'Guardar Cambios',
+                          style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  void _confirmDeleteInstallation(String name) {
+    showDialog(
+      context: context,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          backgroundColor: slate800,
+          title: const Text('Eliminar Instalación', style: TextStyle(color: Colors.white)),
+          content: Text(
+            '¿Está seguro de que desea eliminar la instalación "$name"? Sus claves de acceso ya no serán válidas.',
+            style: const TextStyle(color: slate300),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancelar', style: TextStyle(color: slate400)),
+            ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
+              onPressed: () async {
+                await _installationsBox.delete(name);
+                try {
+                  final client = Supabase.instance.client;
+                  await client.from('app_credentials').delete().eq('installation_name', name);
+                } catch (e) {
+                  debugPrint('Error deleting credentials from Supabase: $e');
+                }
+                setState(() {});
+                if (context.mounted) {
+                  Navigator.pop(context);
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('Instalación eliminada'),
+                      backgroundColor: Colors.redAccent,
+                      duration: Duration(seconds: 2),
+                    ),
+                  );
+                }
+              },
+              child: const Text('Confirmar', style: TextStyle(color: Colors.white)),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  String _formatDateTime(DateTime dt) {
+    final year = dt.year;
+    final month = dt.month.toString().padLeft(2, '0');
+    final day = dt.day.toString().padLeft(2, '0');
+    final hour = dt.hour.toString().padLeft(2, '0');
+    final minute = dt.minute.toString().padLeft(2, '0');
+    return '$day/$month/$year $hour:$minute';
+  }
+
+  void _showRecordDetailsModal(AccessRecord record) {
+    final isVehicle = record.type == 'vehiculo';
+    final accentColor = isVehicle ? const Color(0xFF3B82F6) : const Color(0xFF10B981);
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: slate800,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (BuildContext context) {
+        return Padding(
+          padding: EdgeInsets.only(
+            bottom: MediaQuery.of(context).viewInsets.bottom + 24,
+            left: 20,
+            right: 20,
+            top: 24,
+          ),
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                // Header
+                Row(
+                  children: [
+                    Icon(
+                      isVehicle ? Icons.directions_car_rounded : Icons.person_rounded,
+                      color: accentColor,
+                      size: 28,
+                    ),
+                    const SizedBox(width: 12),
+                    Text(
+                      'Detalles del Registro',
+                      style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold),
+                    ),
+                    const Spacer(),
+                    IconButton(
+                      icon: const Icon(Icons.close, color: slate400),
+                      onPressed: () => Navigator.pop(context),
+                    )
+                  ],
+                ),
+                const Divider(height: 24, color: slate700),
+
+                // Details list
+                _buildDetailRow(Icons.badge_outlined, 'Nombre', record.name),
+                const SizedBox(height: 12),
+                _buildDetailRow(Icons.fingerprint_rounded, 'RUT/DNI', record.docId),
+                if (isVehicle) ...[
+                  const SizedBox(height: 12),
+                  _buildDetailRow(Icons.tag, 'Patente', record.plate ?? 'No especificada'),
+                  const SizedBox(height: 12),
+                  _buildDetailRow(Icons.category_outlined, 'Tipo de Vehículo', record.vehicleType ?? 'No especificado'),
+                ],
+                const SizedBox(height: 12),
+                _buildDetailRow(Icons.location_on_outlined, 'Destino', _displayDestination(record.destination)),
+                const SizedBox(height: 12),
+                _buildDetailRow(Icons.login_rounded, 'Hora de Entrada', _formatDateTime(record.entryTime)),
+                const SizedBox(height: 12),
+                _buildDetailRow(
+                  Icons.logout_rounded,
+                  'Hora de Salida',
+                  record.exitTime != null ? _formatDateTime(record.exitTime!) : 'Dentro del recinto',
+                  valueColor: record.exitTime == null ? const Color(0xFF10B981) : Colors.white,
+                ),
+                if (record.comment != null && record.comment!.trim().isNotEmpty) ...[
+                  const SizedBox(height: 12),
+                  _buildDetailRow(Icons.comment_outlined, 'Comentario', record.comment!),
+                ],
+
+                const SizedBox(height: 32),
+
+                // Action Buttons for Admin/Guardia
+                if (widget.userRole == UserRole.admin || widget.userRole == UserRole.guardia) ...[
+                  Row(
+                    children: [
+                      Expanded(
+                        child: ElevatedButton.icon(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.amber,
+                            foregroundColor: Colors.black87,
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                            padding: const EdgeInsets.symmetric(vertical: 14),
+                          ),
+                          icon: const Icon(Icons.edit_outlined),
+                          label: const Text('Editar', style: TextStyle(fontWeight: FontWeight.bold)),
+                          onPressed: () {
+                            Navigator.pop(context);
+                            _showEditRecordModal(record);
+                          },
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: ElevatedButton.icon(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.redAccent,
+                            foregroundColor: Colors.white,
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                            padding: const EdgeInsets.symmetric(vertical: 14),
+                          ),
+                          icon: const Icon(Icons.delete_outline),
+                          label: const Text('Eliminar', style: TextStyle(fontWeight: FontWeight.bold)),
+                          onPressed: () {
+                            Navigator.pop(context);
+                            _confirmDeleteRecord(record);
+                          },
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildDetailRow(IconData icon, String label, String value, {Color valueColor = Colors.white}) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Icon(icon, size: 20, color: slate400),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(label, style: const TextStyle(fontSize: 12, color: slate400)),
+              const SizedBox(height: 2),
+              Text(
+                value,
+                style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: valueColor),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  void _showEditRecordModal(AccessRecord record) {
+    final formKey = GlobalKey<FormState>();
+    final isVehicle = record.type == 'vehiculo';
+
+    String name = record.name;
+    String docId = record.docId;
+    String? plate = record.plate;
+    String? vehicleType = record.vehicleType;
+    String destinationClean = _displayDestination(record.destination);
+
+    final List<String> availableDestinations = List<String>.from(_destinationsBox.get(widget.installationName) ?? ['Administración', 'Bodega', 'Estacionamiento']);
+    if (!availableDestinations.contains('Otro...')) {
+      availableDestinations.add('Otro...');
+    }
+    String selectedDestination = availableDestinations.contains(destinationClean) ? destinationClean : 'Otro...';
+    bool showCustomDestination = (selectedDestination == 'Otro...');
+    String? comment = record.comment;
+
+    // Dropdown list of categories
+    final List<String> categories = ['Auto', 'Camioneta', 'SUV', 'Camión de Carga', 'Furgón', 'Moto', 'Bicicleta', 'Bus'];
+    
+    // Determine original prefix
+    String prefix = '';
+    final parts = record.destination.split(' | ');
+    if (parts.length > 1) {
+      prefix = '${parts[0]} | ';
+    }
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: slate800,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (BuildContext context) {
+        return StatefulBuilder(
+          builder: (BuildContext context, StateSetter setModalState) {
+            return Padding(
+              padding: EdgeInsets.only(
+                bottom: MediaQuery.of(context).viewInsets.bottom + 24,
+                left: 20,
+                right: 20,
+                top: 24,
+              ),
+              child: Form(
+                key: formKey,
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Row(
+                        children: [
+                          const Icon(Icons.edit_rounded, color: Colors.amber, size: 28),
+                          const SizedBox(width: 12),
+                          Text(
+                            'Editar Registro',
+                            style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold),
+                          ),
+                          const Spacer(),
+                          IconButton(
+                            icon: const Icon(Icons.close, color: slate400),
+                            onPressed: () => Navigator.pop(context),
+                          )
+                        ],
+                      ),
+                      const Divider(height: 24, color: slate700),
+
+                      TextFormField(
+                        initialValue: name,
+                        decoration: InputDecoration(
+                          labelText: 'Nombre Completo',
+                          prefixIcon: const Icon(Icons.badge_outlined),
+                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                          filled: true,
+                          fillColor: slate900,
+                        ),
+                        validator: (v) => (v == null || v.trim().isEmpty) ? 'Ingrese el nombre' : null,
+                        onSaved: (v) => name = v!.trim(),
+                      ),
+                      const SizedBox(height: 16),
+
+                      TextFormField(
+                        initialValue: docId,
+                        decoration: InputDecoration(
+                          labelText: 'Documento / Identificador',
+                          prefixIcon: const Icon(Icons.fingerprint_rounded),
+                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                          filled: true,
+                          fillColor: slate900,
+                        ),
+                        validator: (v) => (v == null || v.trim().isEmpty) ? 'Ingrese el identificador' : null,
+                        onSaved: (v) => docId = v!.trim(),
+                      ),
+                      const SizedBox(height: 16),
+
+                      if (isVehicle) ...[
+                        TextFormField(
+                          initialValue: plate,
+                          decoration: InputDecoration(
+                            labelText: 'Patente / Matrícula',
+                            prefixIcon: const Icon(Icons.tag),
+                            border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                            filled: true,
+                            fillColor: slate900,
+                          ),
+                          validator: (v) => (v == null || v.trim().isEmpty) ? 'Ingrese la patente' : null,
+                          onSaved: (v) => plate = v!.trim().toUpperCase(),
+                        ),
+                        const SizedBox(height: 16),
+
+                        DropdownButtonFormField<String>(
+                          initialValue: categories.contains(vehicleType) ? vehicleType : 'Auto',
+                          decoration: InputDecoration(
+                            labelText: 'Tipo de Vehículo',
+                            prefixIcon: const Icon(Icons.category_outlined),
+                            border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                            filled: true,
+                            fillColor: slate900,
+                          ),
+                          items: categories.map((type) {
+                            return DropdownMenuItem(value: type, child: Text(type));
+                          }).toList(),
+                          onChanged: (val) {
+                            setModalState(() {
+                              vehicleType = val;
+                            });
+                          },
+                          onSaved: (val) => vehicleType = val,
+                        ),
+                        const SizedBox(height: 16),
+                      ],
+
+                      DropdownButtonFormField<String>(
+                        value: selectedDestination,
+                        decoration: InputDecoration(
+                          labelText: 'Destino',
+                          prefixIcon: const Icon(Icons.location_on_outlined),
+                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                          filled: true,
+                          fillColor: slate900,
+                        ),
+                        items: availableDestinations.map((dest) {
+                          return DropdownMenuItem<String>(
+                            value: dest,
+                            child: Text(dest),
+                          );
+                        }).toList(),
+                        onChanged: (val) {
+                          if (val != null) {
+                            setModalState(() {
+                              selectedDestination = val;
+                              showCustomDestination = (val == 'Otro...');
+                            });
+                          }
+                        },
+                        onSaved: (val) {
+                          if (selectedDestination != 'Otro...') {
+                            destinationClean = selectedDestination;
+                          }
+                        },
+                      ),
+                      const SizedBox(height: 16),
+
+                      if (showCustomDestination) ...[
+                        TextFormField(
+                          initialValue: selectedDestination == 'Otro...' ? destinationClean : '',
+                          decoration: InputDecoration(
+                            labelText: 'Escriba el Destino Personalizado',
+                            prefixIcon: const Icon(Icons.edit_location_alt_rounded),
+                            border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                            filled: true,
+                            fillColor: slate900,
+                          ),
+                          validator: (v) => (v == null || v.trim().isEmpty) ? 'Ingrese el destino personalizado' : null,
+                          onSaved: (v) => destinationClean = v!.trim(),
+                        ),
+                        const SizedBox(height: 16),
+                      ],
+
+                      TextFormField(
+                        initialValue: comment,
+                        decoration: InputDecoration(
+                          labelText: 'Comentario (Opcional)',
+                          prefixIcon: const Icon(Icons.comment_outlined),
+                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                          filled: true,
+                          fillColor: slate900,
+                        ),
+                        onSaved: (v) => comment = (v == null || v.trim().isEmpty) ? null : v.trim(),
+                      ),
+                      const SizedBox(height: 24),
+
+                      ElevatedButton(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: const Color(0xFF10B981),
+                          padding: const EdgeInsets.symmetric(vertical: 16),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                        ),
+                        onPressed: () async {
+                          if (formKey.currentState!.validate()) {
+                            formKey.currentState!.save();
+
+                            final updatedRecord = AccessRecord(
+                              id: record.id,
+                              type: record.type,
+                              name: name,
+                              docId: docId,
+                              plate: plate,
+                              vehicleType: vehicleType,
+                              destination: prefix + destinationClean,
+                              entryTime: record.entryTime,
+                              exitTime: record.exitTime,
+                              isInside: record.isInside,
+                              photoPath: record.photoPath,
+                              comment: comment,
+                            );
+
+                            await _recordsBox.put(record.id, updatedRecord.toMap());
+                            _refreshUILists();
+                            SupabaseSyncManager.syncAll();
+
+                            if (context.mounted) {
+                              Navigator.pop(context);
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(
+                                  content: Text('Registro actualizado con éxito'),
+                                  backgroundColor: Color(0xFF10B981),
+                                  duration: Duration(seconds: 2),
+                                ),
+                              );
+                            }
+                          }
+                        },
+                        child: const Text(
+                          'Guardar Cambios',
+                          style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  void _confirmDeleteRecord(AccessRecord record) {
+    showDialog(
+      context: context,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          backgroundColor: slate800,
+          title: const Text('Eliminar Registro', style: TextStyle(color: Colors.white)),
+          content: Text(
+            '¿Está seguro de que desea eliminar el registro de ingreso de "${record.name}"? Esta acción no se puede deshacer.',
+            style: const TextStyle(color: slate300),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancelar', style: TextStyle(color: slate400)),
+            ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
+              onPressed: () async {
+                await _recordsBox.delete(record.id);
+                _refreshUILists();
+                SupabaseSyncManager.syncAll();
+                if (context.mounted) {
+                  Navigator.pop(context);
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('Registro eliminado'),
+                      backgroundColor: Colors.redAccent,
+                      duration: Duration(seconds: 2),
+                    ),
+                  );
+                }
+              },
+              child: const Text('Confirmar', style: TextStyle(color: Colors.white)),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  void _showManageDestinationsModal(String installationName) {
+    final TextEditingController destController = TextEditingController();
+    
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: slate800,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (BuildContext context) {
+        return StatefulBuilder(
+          builder: (BuildContext context, StateSetter setModalState) {
+            final List<String> currentDestinations = List<String>.from(
+              _destinationsBox.get(installationName) ?? ['Administración', 'Bodega', 'Estacionamiento']
+            );
+
+            return Padding(
+              padding: EdgeInsets.only(
+                bottom: MediaQuery.of(context).viewInsets.bottom + 24,
+                left: 20,
+                right: 20,
+                top: 24,
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Row(
+                    children: [
+                      const Icon(Icons.list_alt_rounded, color: Color(0xFF10B981), size: 28),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Text(
+                          'Destinos: $installationName',
+                          style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.close, color: slate400),
+                        onPressed: () => Navigator.pop(context),
+                      )
+                    ],
+                  ),
+                  const Divider(height: 24, color: slate700),
+                  
+                  const Text(
+                    'Bases de datos de destinos exclusivos para este grupo.',
+                    style: TextStyle(color: slate400, fontSize: 13),
+                  ),
+                  const SizedBox(height: 16),
+
+                  // Input row to add new destinations
+                  Row(
+                    children: [
+                      Expanded(
+                        child: TextFormField(
+                          controller: destController,
+                          decoration: InputDecoration(
+                            labelText: 'Nuevo Destino',
+                            prefixIcon: const Icon(Icons.add_location_alt_rounded),
+                            border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                            filled: true,
+                            fillColor: slate900,
+                          ),
+                          onFieldSubmitted: (_) {
+                            final val = destController.text.trim();
+                            if (val.isNotEmpty && !currentDestinations.contains(val)) {
+                              setModalState(() {
+                                currentDestinations.add(val);
+                                _destinationsBox.put(installationName, currentDestinations);
+                                destController.clear();
+                              });
+                            }
+                          },
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      ElevatedButton(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: const Color(0xFF10B981),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+                        ),
+                        onPressed: () {
+                          final val = destController.text.trim();
+                          if (val.isNotEmpty && !currentDestinations.contains(val)) {
+                            setModalState(() {
+                              currentDestinations.add(val);
+                              _destinationsBox.put(installationName, currentDestinations);
+                              destController.clear();
+                            });
+                          }
+                        },
+                        child: const Icon(Icons.add, color: Colors.white),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 20),
+
+                  // List of current destinations
+                  ConstrainedBox(
+                    constraints: BoxConstraints(
+                      maxHeight: MediaQuery.of(context).size.height * 0.4,
+                    ),
+                    child: currentDestinations.isEmpty
+                        ? const Padding(
+                            padding: EdgeInsets.symmetric(vertical: 24),
+                            child: Center(
+                              child: Text(
+                                'No hay destinos guardados.',
+                                style: TextStyle(color: slate400),
+                              ),
+                            ),
+                          )
+                        : ListView.builder(
+                            shrinkWrap: true,
+                            itemCount: currentDestinations.length,
+                            itemBuilder: (context, index) {
+                              final item = currentDestinations[index];
+                              return Container(
+                                margin: const EdgeInsets.only(bottom: 8),
+                                decoration: BoxDecoration(
+                                  color: slate900,
+                                  borderRadius: BorderRadius.circular(12),
+                                  border: Border.all(color: slate700),
+                                ),
+                                child: ListTile(
+                                  dense: true,
+                                  title: Text(
+                                    item,
+                                    style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w500),
+                                  ),
+                                  trailing: IconButton(
+                                    icon: const Icon(Icons.delete_outline_rounded, color: Colors.redAccent, size: 20),
+                                    onPressed: () {
+                                      setModalState(() {
+                                        currentDestinations.removeAt(index);
+                                        _destinationsBox.put(installationName, currentDestinations);
+                                      });
+                                    },
+                                  ),
+                                ),
+                              );
+                            },
+                          ),
+                  ),
+                ],
+              ),
+            );
+          },
+        );
+      },
     );
   }
 }

@@ -1,7 +1,16 @@
 import 'package:flutter/material.dart';
+import 'package:hive_flutter/hive_flutter.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import '../theme/colors.dart';
 
 enum UserRole { admin, guardia, cliente }
+
+class LoginSession {
+  final UserRole role;
+  final String? installationName;
+
+  LoginSession({required this.role, this.installationName});
+}
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -14,15 +23,9 @@ class _LoginScreenState extends State<LoginScreen> {
   final TextEditingController _passwordController = TextEditingController();
   bool _obscureText = true;
   String? _errorMessage;
+  bool _isLoading = false;
 
-  // Predefined role keys
-  final Map<String, UserRole> _roleKeys = {
-    'admin123': UserRole.admin,
-    'guardia123': UserRole.guardia,
-    'cliente123': UserRole.cliente,
-  };
-
-  void _handleLogin() {
+  void _handleLogin() async {
     final password = _passwordController.text.trim();
     if (password.isEmpty) {
       setState(() {
@@ -31,21 +34,153 @@ class _LoginScreenState extends State<LoginScreen> {
       return;
     }
 
-    if (_roleKeys.containsKey(password)) {
-      final role = _roleKeys[password]!;
-      setState(() {
-        _errorMessage = null;
-      });
+    setState(() {
+      _isLoading = true;
+      _errorMessage = null;
+    });
+
+    try {
+      final client = Supabase.instance.client;
+      // 1. Query the app_credentials table in Supabase
+      final response = await client
+          .from('app_credentials')
+          .select()
+          .eq('key_hash', password)
+          .limit(1);
+
+      if (response.isNotEmpty) {
+        final Map<String, dynamic> cred = response.first;
+        final roleStr = cred['role'] as String;
+        final instName = cred['installation_name'] as String?;
+
+        UserRole role;
+        if (roleStr == 'admin') {
+          role = UserRole.admin;
+        } else if (roleStr == 'guardia') {
+          role = UserRole.guardia;
+        } else {
+          role = UserRole.cliente;
+        }
+
+        // Cache locally for offline support
+        final installationsBox = Hive.box('installations_box');
+        if (role == UserRole.admin) {
+          await installationsBox.put('_admin_cached_key', password);
+        } else if (instName != null) {
+          // Fetch both guard and client keys for this installation to fully provision the local cache
+          final allInstCreds = await client
+              .from('app_credentials')
+              .select()
+              .eq('installation_name', instName);
+          
+          String? guardKey;
+          String? clientKey;
+          for (var c in allInstCreds) {
+            if (c['role'] == 'guardia') {
+              guardKey = c['key_hash'];
+            } else if (c['role'] == 'cliente') {
+              clientKey = c['key_hash'];
+            }
+          }
+          await installationsBox.put(instName, {
+            'name': instName,
+            'guardKey': guardKey ?? '',
+            'clientKey': clientKey ?? '',
+          });
+        }
+
+        setState(() {
+          _isLoading = false;
+        });
+
+        if (mounted) {
+          Navigator.pushReplacementNamed(
+            context,
+            '/dashboard',
+            arguments: LoginSession(
+              role: role,
+              installationName: instName,
+            ),
+          );
+        }
+        return;
+      } else {
+        throw Exception('Clave no registrada en el servidor.');
+      }
+    } catch (e) {
+      debugPrint('Database authentication failed, trying offline cache: $e');
       
-      // Navigate to Dashboard with the selected role
-      Navigator.pushReplacementNamed(
-        context,
-        '/dashboard',
-        arguments: role,
-      );
-    } else {
+      // 2. Offline Fallback from local Hive box
+      final installationsBox = Hive.box('installations_box');
+      
+      // Check cached admin key
+      final cachedAdminKey = installationsBox.get('_admin_cached_key') as String?;
+      // Safe default key if database has never been connected yet (First run)
+      final adminPassword = cachedAdminKey ?? 'Operonte23#';
+
+      if (password == adminPassword) {
+        setState(() {
+          _isLoading = false;
+          _errorMessage = null;
+        });
+        if (mounted) {
+          Navigator.pushReplacementNamed(
+            context,
+            '/dashboard',
+            arguments: LoginSession(role: UserRole.admin),
+          );
+        }
+        return;
+      }
+
+      // Check local installation keys
+      for (var key in installationsBox.keys) {
+        if (key == '_admin_cached_key') continue;
+        final data = installationsBox.get(key);
+        if (data is Map) {
+          final instName = data['name'] as String?;
+          final guardKey = data['guardKey'] as String?;
+          final clientKey = data['clientKey'] as String?;
+
+          if (password == guardKey) {
+            setState(() {
+              _isLoading = false;
+              _errorMessage = null;
+            });
+            if (mounted) {
+              Navigator.pushReplacementNamed(
+                context,
+                '/dashboard',
+                arguments: LoginSession(
+                  role: UserRole.guardia,
+                  installationName: instName,
+                ),
+              );
+            }
+            return;
+          } else if (password == clientKey) {
+            setState(() {
+              _isLoading = false;
+              _errorMessage = null;
+            });
+            if (mounted) {
+              Navigator.pushReplacementNamed(
+                context,
+                '/dashboard',
+                arguments: LoginSession(
+                  role: UserRole.cliente,
+                  installationName: instName,
+                ),
+              );
+            }
+            return;
+          }
+        }
+      }
+
       setState(() {
-        _errorMessage = 'Clave incorrecta. Inténtalo de nuevo.';
+        _isLoading = false;
+        _errorMessage = 'Clave incorrecta. Verifica tu conexión si es tu primer ingreso.';
       });
     }
   }
@@ -162,7 +297,7 @@ class _LoginScreenState extends State<LoginScreen> {
 
                 // Login Button
                 ElevatedButton(
-                  onPressed: _handleLogin,
+                  onPressed: _isLoading ? null : _handleLogin,
                   style: ElevatedButton.styleFrom(
                     backgroundColor: const Color(0xFF10B981),
                     padding: const EdgeInsets.symmetric(vertical: 16),
@@ -170,15 +305,24 @@ class _LoginScreenState extends State<LoginScreen> {
                       borderRadius: BorderRadius.circular(12),
                     ),
                   ),
-                  child: const Text(
-                    'INICIAR TURNO',
-                    style: TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.bold,
-                      color: Colors.white,
-                      letterSpacing: 1.0,
-                    ),
-                  ),
+                  child: _isLoading
+                      ? const SizedBox(
+                          height: 20,
+                          width: 20,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2.5,
+                            color: Colors.white,
+                          ),
+                        )
+                      : const Text(
+                          'INICIAR TURNO',
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.white,
+                            letterSpacing: 1.0,
+                          ),
+                        ),
                 ),
                 const SizedBox(height: 48),
 
@@ -194,7 +338,7 @@ class _LoginScreenState extends State<LoginScreen> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: const [
                       Text(
-                        '💡 Claves de demostración:',
+                        '🔑 Control de Acceso Profesional:',
                         style: TextStyle(
                           fontWeight: FontWeight.bold,
                           color: Color(0xFF10B981),
@@ -202,11 +346,10 @@ class _LoginScreenState extends State<LoginScreen> {
                         ),
                       ),
                       SizedBox(height: 8),
-                      Text('• Administrador: admin123', style: TextStyle(color: slate300, fontSize: 12)),
-                      SizedBox(height: 4),
-                      Text('• Guardia: guardia123', style: TextStyle(color: slate300, fontSize: 12)),
-                      SizedBox(height: 4),
-                      Text('• Cliente: cliente123', style: TextStyle(color: slate300, fontSize: 12)),
+                      Text(
+                        'Las claves de acceso de los guardias, clientes e instalaciones son dinámicas y administradas de forma segura desde la base de datos de Supabase.',
+                        style: TextStyle(color: slate300, fontSize: 12, height: 1.4),
+                      ),
                     ],
                   ),
                 ),

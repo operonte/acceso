@@ -36,6 +36,7 @@ class PreAuthRecord {
   }
 
   factory PreAuthRecord.fromMap(Map<dynamic, dynamic> map) {
+    final parsedDate = DateTime.parse(map['visitDate'] as String);
     return PreAuthRecord(
       id: map['id'] as String,
       type: map['type'] as String,
@@ -44,7 +45,7 @@ class PreAuthRecord {
       plate: map['plate'] as String?,
       vehicleType: map['vehicleType'] as String?,
       destination: map['destination'] as String,
-      visitDate: DateTime.parse(map['visitDate'] as String),
+      visitDate: DateTime(parsedDate.year, parsedDate.month, parsedDate.day),
       isUsed: map['isUsed'] as bool,
     );
   }
