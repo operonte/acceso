@@ -336,6 +336,12 @@ class SupabaseSyncManager {
         }
 
         await client.from('access_records').upsert(_toSupabaseAccessRecord(record));
+      } else {
+        try {
+          await client.from('access_records').delete().eq('id', id);
+        } catch (deleteError) {
+          debugPrint('Silent deletion from Supabase error: $deleteError');
+        }
       }
       await _pendingRecordsBox.delete(id);
     }

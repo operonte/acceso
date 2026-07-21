@@ -2199,7 +2199,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                                 textCapitalization: TextCapitalization.characters,
                                 controller: plateController,
                                 decoration: InputDecoration(
-                                  labelText: 'Patente / Placa',
+                                  labelText: (vehicleType == 'Bicicleta' || vehicleType == 'A Pie') ? 'Patente (Opcional)' : 'Patente / Placa',
                                   prefixIcon: const Icon(Icons.tag),
                                   border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
                                   filled: true,
@@ -2208,6 +2208,9 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                                 inputFormatters: [PlateFormatter()],
                                 onChanged: updatePlateSuggestions,
                                 validator: (value) {
+                                  if (vehicleType == 'Bicicleta' || vehicleType == 'A Pie') {
+                                    return null;
+                                  }
                                   if (value == null || value.trim().isEmpty) {
                                     return 'Ingrese patente';
                                   }
@@ -2229,7 +2232,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                                   filled: true,
                                   fillColor: slate900,
                                 ),
-                                items: ['Auto', 'Camioneta', 'SUV', 'Camión de Carga', 'Furgón', 'Moto', 'Bicicleta', 'Bus']
+                                items: ['Auto', 'Moto', 'Furgón / Bus', 'Bicicleta', 'A Pie']
                                     .map((t) => DropdownMenuItem(value: t, child: Text(t)))
                                     .toList(),
                                 onChanged: (value) {
@@ -2849,7 +2852,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                                   filled: true,
                                   fillColor: slate900,
                                 ),
-                                items: ['Auto', 'Camioneta', 'SUV', 'Camión de Carga', 'Furgón', 'Moto', 'Bicicleta', 'Bus']
+                                items: ['Auto', 'Moto', 'Furgón / Bus', 'Bicicleta', 'A Pie']
                                     .map((t) => DropdownMenuItem(value: t, child: Text(t)))
                                     .toList(),
                                 onChanged: (value) {
@@ -3240,8 +3243,13 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                                 label: const Text('Ver Política Oficial en Web', style: TextStyle(fontWeight: FontWeight.bold)),
                                 onPressed: () async {
                                   final uri = Uri.parse('https://cristianbravo-dev.web.app/es/privacy/acceso');
-                                  if (await canLaunchUrl(uri)) {
-                                    await launchUrl(uri, mode: LaunchMode.externalApplication);
+                                  try {
+                                    final launched = await launchUrl(uri, mode: LaunchMode.externalApplication);
+                                    if (!launched) {
+                                      await launchUrl(uri, mode: LaunchMode.platformDefault);
+                                    }
+                                  } catch (e) {
+                                    debugPrint('Error launching privacy policy: $e');
                                   }
                                 },
                               ),
@@ -4156,8 +4164,8 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     int maxCount = 0;
     String peakBracket = '';
 
-    for (final r in _records) {
-      final hour = r.entryTime.hour;
+    for (final r in _filteredRecords) {
+      final hour = r.entryTime.toLocal().hour;
       String key = '20-24h';
       if (hour >= 0 && hour < 4) {
         key = '00-04h';
@@ -4267,14 +4275,49 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     );
   }
 
+  void _showTrafficChartModal() {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: slate900,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (context) => Container(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              children: [
+                const Icon(Icons.bar_chart_rounded, color: Color(0xFF10B981), size: 24),
+                const SizedBox(width: 8),
+                const Text(
+                  'Estadísticas de Tráfico y Horas Pico',
+                  style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
+                ),
+                const Spacer(),
+                IconButton(
+                  icon: const Icon(Icons.close, color: slate400),
+                  onPressed: () => Navigator.pop(context),
+                ),
+              ],
+            ),
+            const SizedBox(height: 16),
+            _buildPeakHoursChart(),
+            const SizedBox(height: 16),
+          ],
+        ),
+      ),
+    );
+  }
+
   // --- Monitoreo Tab UI ---
   Widget _buildMonitoreoTab() {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        // Peak Hours Chart for Admin
-        if (widget.userRole == UserRole.admin)
-          _buildPeakHoursChart(),
         // 1. Sleek Compact Header & Action Row
         Container(
           padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
@@ -4510,7 +4553,19 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                   const SizedBox(width: 8),
 
                   // Export button
-                  if (widget.userRole == UserRole.admin)
+                  if (widget.userRole == UserRole.admin) ...[
+                    IconButton.filled(
+                      style: IconButton.styleFrom(
+                        backgroundColor: const Color(0xFF10B981).withValues(alpha: 0.15),
+                        foregroundColor: const Color(0xFF10B981),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                        padding: const EdgeInsets.all(12),
+                      ),
+                      icon: const Icon(Icons.bar_chart_rounded, size: 20),
+                      tooltip: 'Gráfico de Horas Pico',
+                      onPressed: _showTrafficChartModal,
+                    ),
+                    const SizedBox(width: 8),
                     IconButton.filled(
                       style: IconButton.styleFrom(
                         backgroundColor: slate800,
@@ -4522,6 +4577,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                       tooltip: 'Exportar CSV',
                       onPressed: _exportHistoryToCSV,
                     ),
+                  ],
                 ],
               ),
               const SizedBox(height: 12),
@@ -4533,13 +4589,13 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                   children: [
                     _buildFilterChip('todos', label: 'Todos'),
                     const SizedBox(width: 8),
-                    _buildFilterChip('a_pie', icon: Icons.directions_walk, tooltip: 'A pie'),
+                    _buildFilterChip('a_pie', icon: Icons.directions_walk, tooltip: 'A Pie'),
                     const SizedBox(width: 8),
-                    _buildFilterChip('vehiculos', icon: Icons.directions_car, tooltip: 'Vehículos'),
+                    _buildFilterChip('vehiculos', icon: Icons.directions_car, tooltip: 'Autos'),
                     const SizedBox(width: 8),
                     _buildFilterChip('moto', icon: Icons.two_wheeler, tooltip: 'Moto'),
                     const SizedBox(width: 8),
-                    _buildFilterChip('camion', icon: Icons.local_shipping, tooltip: 'Camión'),
+                    _buildFilterChip('furgon_bus', icon: Icons.directions_bus, tooltip: 'Furgón / Bus'),
                     const SizedBox(width: 8),
                     _buildFilterChip('bicicleta', icon: Icons.pedal_bike, tooltip: 'Bicicleta'),
                     if (_selectedDateRange != null) ...[
@@ -6848,7 +6904,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     String? comment = record.comment;
 
     // Dropdown list of categories
-    final List<String> categories = ['Auto', 'Camioneta', 'SUV', 'Camión de Carga', 'Furgón', 'Moto', 'Bicicleta', 'Bus'];
+    final List<String> categories = ['Auto', 'Moto', 'Furgón / Bus', 'Bicicleta', 'A Pie'];
     
     // Determine original prefix
     String prefix = '';
@@ -7099,11 +7155,22 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
             ElevatedButton(
               style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
               onPressed: () async {
+                try {
+                  await SupabaseSyncManager.client.from('access_records').delete().eq('id', record.id);
+                } catch (e) {
+                  debugPrint('Silent deletion from Supabase failed or offline: $e');
+                }
                 await _recordsBox.delete(record.id);
-                _refreshUILists();
+                setState(() {
+                  _refreshUILists();
+                });
                 SupabaseSyncManager.syncAll();
                 if (context.mounted) {
-                  Navigator.pop(context);
+                  Navigator.pop(context); // Close dialog
+                  // If triggered from edit/details bottom sheet, close the sheet too
+                  if (Navigator.canPop(context)) {
+                    Navigator.pop(context);
+                  }
                   ScaffoldMessenger.of(context).showSnackBar(
                     const SnackBar(
                       content: Text('Registro eliminado'),
