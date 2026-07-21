@@ -1277,20 +1277,29 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
       try {
         Directory? targetDir;
         if (Platform.isAndroid) {
-          final dir = Directory('/storage/emulated/0/Download/acceso');
-          try {
-            if (!await dir.exists()) {
-              await dir.create(recursive: true);
-            }
-            targetDir = dir;
-          } catch (_) {
-            final Directory? downloads = await getDownloadsDirectory();
-            if (downloads != null) {
-              targetDir = Directory('${downloads.path}/acceso');
-              if (!await targetDir.exists()) {
-                await targetDir.create(recursive: true);
+          final List<Directory> candidates = [
+            Directory('/storage/emulated/0/Download/acceso'),
+            Directory('/sdcard/Download/acceso'),
+          ];
+          for (final dir in candidates) {
+            try {
+              if (!dir.existsSync()) {
+                dir.createSync(recursive: true);
               }
-            }
+              targetDir = dir;
+              break;
+            } catch (_) {}
+          }
+          if (targetDir == null) {
+            try {
+              final extDirs = await getExternalStorageDirectories(type: StorageDirectory.downloads);
+              if (extDirs != null && extDirs.isNotEmpty) {
+                targetDir = Directory('${extDirs.first.path}/acceso');
+                if (!targetDir.existsSync()) {
+                  targetDir.createSync(recursive: true);
+                }
+              }
+            } catch (_) {}
           }
         } else {
           final Directory? downloads = await getDownloadsDirectory();
@@ -6906,11 +6915,11 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     // Dropdown list of categories
     final List<String> categories = ['Auto', 'Moto', 'Furgón / Bus', 'Bicicleta', 'A Pie'];
     
-    // Determine original prefix
-    String prefix = '';
-    final parts = record.destination.split(' | ');
-    if (parts.length > 1) {
-      prefix = '${parts[0]} | ';
+    String installationPrefix = '${widget.installationName} | ';
+    if (_selectedAdminInstallation != null && _selectedAdminInstallation!.isNotEmpty) {
+      installationPrefix = '$_selectedAdminInstallation | ';
+    } else if (record.destination.contains(' | ')) {
+      installationPrefix = '${record.destination.split(' | ')[0]} | ';
     }
 
     showModalBottomSheet(
@@ -7096,7 +7105,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                               docId: docId,
                               plate: plate,
                               vehicleType: vehicleType,
-                              destination: prefix + destinationClean,
+                              destination: installationPrefix + destinationClean,
                               entryTime: record.entryTime,
                               exitTime: record.exitTime,
                               isInside: record.isInside,
@@ -7105,7 +7114,9 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                             );
 
                             await _recordsBox.put(record.id, updatedRecord.toMap());
-                            _refreshUILists();
+                            setState(() {
+                              _refreshUILists();
+                            });
                             SupabaseSyncManager.syncAll();
 
                             if (context.mounted) {
