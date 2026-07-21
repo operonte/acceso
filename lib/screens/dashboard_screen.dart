@@ -1116,11 +1116,31 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
   // --- Exporting to CSV ---
 
   Future<void> _exportHistoryToCSV() async {
-    final filtered = _filteredRecords;
-    if (filtered.isEmpty) {
+    final exportRecords = _records.where((r) {
+      if (_activeInstallation != null) {
+        if (!r.destination.startsWith('$_activeInstallation | ')) return false;
+      }
+      if (_filterType != 'todos') {
+        if (_filterType == 'persona' && r.type != 'persona') return false;
+        if (_filterType == 'vehiculo' && (r.type != 'vehiculo' || r.vehicleType == 'Camión' || r.vehicleType == 'Moto' || r.vehicleType == 'Bicicleta')) return false;
+        if (_filterType == 'camion' && r.vehicleType != 'Camión') return false;
+        if (_filterType == 'moto' && r.vehicleType != 'Moto') return false;
+        if (_filterType == 'bicicleta' && r.vehicleType != 'Bicicleta') return false;
+      }
+      if (_searchQuery.isNotEmpty) {
+        final query = _searchQuery.toLowerCase();
+        return r.name.toLowerCase().contains(query) ||
+            r.docId.toLowerCase().contains(query) ||
+            (r.plate != null && r.plate!.toLowerCase().contains(query)) ||
+            r.destination.toLowerCase().contains(query);
+      }
+      return true;
+    }).toList();
+
+    if (exportRecords.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('No hay registros filtrados para exportar.'),
+          content: Text('No hay registros para exportar.'),
           backgroundColor: Colors.redAccent,
         ),
       );
@@ -1131,9 +1151,9 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     final StringBuffer csvBuffer = StringBuffer();
     csvBuffer.writeln('ID,Tipo,Nombre,RUT_DNI,Patente_Placa,Tipo_Vehiculo,Destino_Motivo,Fecha_Ingreso,Fecha_Salida,Estado');
 
-    for (var r in filtered) {
+    for (var r in exportRecords) {
       final String exitTimeStr = r.exitTime != null ? r.exitTime!.toIso8601String() : 'N/A';
-      final String status = r.isInside ? 'Dentro' : 'Salida';
+      final String status = r.isInside ? 'En el recinto' : 'Salido';
       csvBuffer.writeln(
         '"${r.id}","${r.type}","${r.name}","${r.docId}","${r.plate ?? ''}","${r.vehicleType ?? ''}","${r.destination}","${r.entryTime.toIso8601String()}","$exitTimeStr","$status"'
       );
@@ -3673,41 +3693,39 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
       appBar: AppBar(
         backgroundColor: slate800,
         elevation: 0,
-        title: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisSize: MainAxisSize.min,
+        titleSpacing: 12,
+        title: Row(
           children: [
-            Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Icon(Icons.security, color: Color(0xFF10B981), size: 22),
-                const SizedBox(width: 6),
-                RichText(
-                  text: const TextSpan(
-                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, letterSpacing: 0.5),
-                    children: [
-                      TextSpan(text: 'CONTROL ', style: TextStyle(color: Colors.white)),
-                      TextSpan(text: 'ACCESO', style: TextStyle(color: Color(0xFF10B981))),
-                    ],
-                  ),
-                ),
-              ],
+            const Icon(Icons.security, color: Color(0xFF10B981), size: 20),
+            const SizedBox(width: 6),
+            const Text(
+              'CONTROL ACCESO',
+              style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: Colors.white, letterSpacing: 0.5),
             ),
-            Padding(
-              padding: const EdgeInsets.only(left: 28),
+            const SizedBox(width: 6),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+              decoration: BoxDecoration(
+                color: widget.userRole == UserRole.admin
+                    ? Colors.redAccent.withValues(alpha: 0.2)
+                    : const Color(0xFF10B981).withValues(alpha: 0.2),
+                borderRadius: BorderRadius.circular(4),
+                border: Border.all(
+                  color: widget.userRole == UserRole.admin
+                      ? Colors.redAccent.withValues(alpha: 0.5)
+                      : const Color(0xFF10B981).withValues(alpha: 0.5),
+                ),
+              ),
               child: Text(
                 widget.userRole == UserRole.admin
-                    ? 'ADMINISTRADOR'
-                    : (widget.userRole == UserRole.guardia ? 'OPERADOR GUARDIA' : 'VISTA CLIENTE'),
+                    ? 'ADMIN'
+                    : (widget.userRole == UserRole.guardia ? 'GUARDIA' : 'CLIENTE'),
                 style: TextStyle(
                   fontSize: 9,
                   fontWeight: FontWeight.bold,
-                  letterSpacing: 0.5,
                   color: widget.userRole == UserRole.admin
                       ? Colors.redAccent
-                      : (widget.userRole == UserRole.guardia
-                          ? const Color(0xFF10B981)
-                          : Colors.blueAccent),
+                      : const Color(0xFF10B981),
                 ),
               ),
             ),
@@ -3722,91 +3740,71 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                 valueListenable: SupabaseSyncManager.isSyncing,
                 builder: (context, isSyncing, child) {
                   return IconButton(
+                    constraints: const BoxConstraints(minWidth: 34, minHeight: 34),
+                    padding: const EdgeInsets.all(4),
                     tooltip: isOnline 
-                        ? (isSyncing ? 'Sincronizando con nube...' : 'Sincronizado. Toca para forzar.')
-                        : 'Modo Offline (Sin Internet)',
-                    icon: AnimatedSwitcher(
-                      duration: const Duration(milliseconds: 300),
-                      child: isSyncing
-                          ? const SizedBox(
-                              width: 20,
-                              height: 20,
-                              child: CircularProgressIndicator(
-                                strokeWidth: 2,
-                                color: Color(0xFF10B981),
-                              ),
-                            )
-                          : Icon(
-                              isOnline ? Icons.cloud_done : Icons.cloud_off,
-                              color: isOnline ? const Color(0xFF10B981) : Colors.redAccent,
-                              key: ValueKey(isOnline),
-                            ),
-                    ),
-                    onPressed: () {
-                      SupabaseSyncManager.syncAll();
-                    },
+                        ? (isSyncing ? 'Sincronizando...' : 'Sincronizado')
+                        : 'Modo Offline',
+                    icon: isSyncing
+                        ? const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF10B981)),
+                          )
+                        : Icon(
+                            isOnline ? Icons.cloud_done_rounded : Icons.cloud_off_rounded,
+                            size: 20,
+                            color: isOnline ? const Color(0xFF10B981) : Colors.redAccent,
+                          ),
+                    onPressed: () => SupabaseSyncManager.syncAll(),
                   );
                 },
               );
             },
           ),
-          const SizedBox(width: 8),
 
+          // Notifications button
           Stack(
             alignment: Alignment.center,
             children: [
               IconButton(
+                constraints: const BoxConstraints(minWidth: 34, minHeight: 34),
+                padding: const EdgeInsets.all(4),
                 tooltip: 'Notificaciones',
-                icon: const Icon(Icons.notifications_rounded, color: Colors.white),
+                icon: const Icon(Icons.notifications_rounded, color: Colors.white, size: 20),
                 onPressed: _showNotificationsModal,
               ),
               if (_notifications.any((n) => !n.isRead))
                 Positioned(
-                  top: 10,
-                  right: 10,
+                  top: 6,
+                  right: 6,
                   child: Container(
-                    padding: const EdgeInsets.all(2),
+                    width: 7,
+                    height: 7,
                     decoration: const BoxDecoration(
-                      color: Colors.red,
+                      color: Colors.redAccent,
                       shape: BoxShape.circle,
-                    ),
-                    constraints: const BoxConstraints(
-                      minWidth: 8,
-                      minHeight: 8,
                     ),
                   ),
                 ),
             ],
           ),
-          const SizedBox(width: 8),
 
-          // Live Clock widget
-          Container(
-            margin: const EdgeInsets.only(right: 8),
-            alignment: Alignment.center,
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              crossAxisAlignment: CrossAxisAlignment.end,
-              children: [
-                Text(
-                  _formatTime(_currentTime),
-                  style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Color(0xFF10B981)),
-                ),
-                Text(
-                  '${_currentTime.day}/${_currentTime.month}/${_currentTime.year}',
-                  style: const TextStyle(fontSize: 10, color: slate400),
-                ),
-              ],
-            ),
-          ),
+          // Settings button
           IconButton(
-            tooltip: 'Configuración y Privacidad',
-            icon: const Icon(Icons.settings_suggest_rounded, color: slate400),
+            constraints: const BoxConstraints(minWidth: 34, minHeight: 34),
+            padding: const EdgeInsets.all(4),
+            tooltip: 'Configuración',
+            icon: const Icon(Icons.settings_rounded, color: slate400, size: 20),
             onPressed: _showSettingsModal,
           ),
+
+          // Logout button
           IconButton(
+            constraints: const BoxConstraints(minWidth: 34, minHeight: 34),
+            padding: const EdgeInsets.all(4),
             tooltip: 'Cerrar Sesión',
-            icon: const Icon(Icons.logout_rounded, color: slate400),
+            icon: const Icon(Icons.logout_rounded, color: slate400, size: 20),
             onPressed: () async {
               final sessionBox = Hive.box('session_box');
               await sessionBox.clear();
@@ -3815,7 +3813,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
               }
             },
           ),
-          const SizedBox(width: 8),
+          const SizedBox(width: 4),
         ],
       ),
 
@@ -3835,7 +3833,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
               foregroundColor: Colors.white,
               icon: const Icon(Icons.qr_code_scanner),
               label: const Text('Escanear QR', style: TextStyle(fontWeight: FontWeight.bold)),
-              onPressed: _showScannerOptions,
+              onPressed: _openCameraScanner,
             ),
 
       // --- Bottom Navigation Menu ---
@@ -4275,17 +4273,19 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                   ],
                 ),
               ),
-              ElevatedButton.icon(
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.amber.shade700,
-                  foregroundColor: Colors.white,
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              if (widget.userRole != UserRole.guardia) ...[
+                ElevatedButton.icon(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.amber.shade700,
+                    foregroundColor: Colors.white,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                  ),
+                  icon: const Icon(Icons.add_task),
+                  label: const Text('Agendar', style: TextStyle(fontWeight: FontWeight.bold)),
+                  onPressed: _showNewPreAuthModal,
                 ),
-                icon: const Icon(Icons.add_task),
-                label: const Text('Agendar', style: TextStyle(fontWeight: FontWeight.bold)),
-                onPressed: _showNewPreAuthModal,
-              ),
+              ],
               if (widget.userRole == UserRole.admin) ...[
                 const SizedBox(width: 8),
                 IconButton(
@@ -4850,7 +4850,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
               ),
 
               // Button to authorize entry (Mark In)
-              if (widget.userRole == UserRole.admin)
+              if (widget.userRole != UserRole.cliente)
                 InkWell(
                   onTap: () => _checkinPreAuth(pre),
                 child: Container(
