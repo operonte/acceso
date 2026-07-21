@@ -16,6 +16,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import '../models/access_record.dart';
 import '../models/pre_auth_record.dart';
 import '../models/blacklist_entry.dart';
+import '../models/whitelist_entry.dart';
 import '../models/app_notification.dart';
 import '../providers/dashboard_provider.dart';
 import 'camera_scanner_screen.dart';
@@ -53,12 +54,14 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
   final Box _recordsBox = Hive.box('records_box');
   final Box _preAuthBox = Hive.box('pre_auth_box');
   final Box _blacklistBox = Hive.box('blacklist_box');
+  final Box _whitelistBox = Hive.box('whitelist_box');
   final Box _installationsBox = Hive.box('installations_box');
   final Box _destinationsBox = Hive.box('destinations_box');
 
   List<AccessRecord> get _records => ref.read(dashboardProvider).allRecords;
   List<PreAuthRecord> get _preAuths => ref.read(dashboardProvider).allPreAuths;
   List<BlacklistEntry> get _blacklist => ref.read(dashboardProvider).allBlacklist;
+  List<WhitelistEntry> get _whitelist => ref.read(dashboardProvider).allWhitelist;
   List<AppNotification> get _notifications => ref.read(dashboardProvider).notifications;
   AppNotification? get _activeBannerNotification => ref.read(dashboardProvider).activeBannerNotification;
 
@@ -78,6 +81,10 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
   // --- Blacklist View Parameters ---
   String _blacklistSearchQuery = '';
   final TextEditingController _blacklistSearchController = TextEditingController();
+
+  // --- Whitelist View Parameters ---
+  String _whitelistSearchQuery = '';
+  final TextEditingController _whitelistSearchController = TextEditingController();
 
   void _addNotification({required String type, required String title, required String body}) {
     ref.read(dashboardProvider.notifier).addNotification(
@@ -355,6 +362,27 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
           return entry;
         }
         if (cleanEntryId == cleanDoc) {
+          return entry;
+        }
+      }
+    }
+    return null;
+  }
+
+  WhitelistEntry? _checkWhitelist(String docId, String? plate) {
+    final cleanDoc = docId.replaceAll(RegExp(r'[^a-zA-Z0-9]'), '').toUpperCase();
+    final cleanPlt = plate?.replaceAll(RegExp(r'[^a-zA-Z0-9]'), '').toUpperCase() ?? '';
+
+    for (var entry in _whitelist) {
+      final cleanEntryId = entry.identifier.replaceAll(RegExp(r'[^a-zA-Z0-9]'), '').toUpperCase();
+      if (entry.type == 'persona' && cleanDoc.isNotEmpty && cleanEntryId == cleanDoc) {
+        return entry;
+      }
+      if (entry.type == 'vehiculo') {
+        if (cleanPlt.isNotEmpty && cleanEntryId == cleanPlt) {
+          return entry;
+        }
+        if (cleanDoc.isNotEmpty && cleanEntryId == cleanDoc) {
           return entry;
         }
       }
@@ -760,6 +788,50 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
               TextButton(
                 onPressed: () => Navigator.pop(context),
                 child: const Text('Entendido', style: TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold)),
+              ),
+            ],
+          ),
+        );
+      }
+      return;
+    }
+
+    // Check Whitelist (Lista Blanca)!
+    final whitelistMatch = _checkWhitelist(pre.docId, pre.plate);
+    if (whitelistMatch != null) {
+      NotificationHelper.showNotification(
+        '✅ LISTA BLANCA: Permita el Acceso',
+        '${whitelistMatch.name} (${whitelistMatch.unitOrRole}) pertenece a la Lista Blanca. No se requiere registro de bitácora.',
+        isAlert: false,
+      );
+
+      _addNotification(
+        type: 'info',
+        title: '✅ Lista Blanca - Acceso Permitido',
+        body: '${whitelistMatch.name} (${whitelistMatch.unitOrRole}) ingresó sin registro por ser Lista Blanca.',
+      );
+
+      if (mounted) {
+        showDialog(
+          context: context,
+          builder: (context) => AlertDialog(
+            backgroundColor: slate800,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+            title: const Row(
+              children: [
+                Icon(Icons.verified_user_rounded, color: Color(0xFF10B981)),
+                SizedBox(width: 8),
+                Text('LISTA BLANCA', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+              ],
+            ),
+            content: Text(
+              '${whitelistMatch.name} (${whitelistMatch.unitOrRole})\n\nPertenece a la LISTA BLANCA del recinto.\nPermita el acceso directamente.\n\n(No se genera registro en la bitácora de historial)',
+              style: const TextStyle(color: slate300),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('Permitir Acceso', style: TextStyle(color: Color(0xFF10B981), fontWeight: FontWeight.bold)),
               ),
             ],
           ),
@@ -2359,6 +2431,51 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                                return;
                              }
 
+                              // Check Whitelist (Lista Blanca)!
+                              final whitelistMatch = _checkWhitelist(docId, type == 'vehiculo' ? plate : null);
+                              if (whitelistMatch != null) {
+                                NotificationHelper.showNotification(
+                                  '✅ LISTA BLANCA: Permita el Acceso',
+                                  '${whitelistMatch.name} (${whitelistMatch.unitOrRole}) pertenece a la Lista Blanca. No se requiere registro de bitácora.',
+                                  isAlert: false,
+                                );
+
+                                _addNotification(
+                                  type: 'info',
+                                  title: '✅ Lista Blanca - Acceso Permitido',
+                                  body: '${whitelistMatch.name} (${whitelistMatch.unitOrRole}) ingresó sin registro por ser Lista Blanca.',
+                                );
+
+                                if (context.mounted) {
+                                  Navigator.pop(context); // Close sheet
+                                  showDialog(
+                                    context: context,
+                                    builder: (context) => AlertDialog(
+                                      backgroundColor: slate800,
+                                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                                      title: const Row(
+                                        children: [
+                                          Icon(Icons.verified_user_rounded, color: Color(0xFF10B981)),
+                                          SizedBox(width: 8),
+                                          Text('LISTA BLANCA', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                                        ],
+                                      ),
+                                      content: Text(
+                                        '${whitelistMatch.name} (${whitelistMatch.unitOrRole})\n\nPertenece a la LISTA BLANCA del recinto.\nPermita el acceso directamente.\n\n(No se genera registro en la bitácora de historial)',
+                                        style: const TextStyle(color: slate300),
+                                      ),
+                                      actions: [
+                                        TextButton(
+                                          onPressed: () => Navigator.pop(context),
+                                          child: const Text('Permitir Acceso', style: TextStyle(color: Color(0xFF10B981), fontWeight: FontWeight.bold)),
+                                        ),
+                                      ],
+                                    ),
+                                  );
+                                }
+                                return;
+                              }
+
                             // Check for duplicates
                             AccessRecord? duplicateRecord;
                             String identifierLabel = '';
@@ -2424,7 +2541,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                             }
 
                             final finalDestination = isPreauthVisit
-                                ? '$destination [Visita]'
+                                ? '$destination [Visita Agendada]'
                                 : destination;
 
                             final targetInst = selectedInstallationForRecord ?? _activeInstallation;
@@ -2447,9 +2564,14 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
 
                             if (isPreauthVisit) {
                               NotificationHelper.showNotification(
-                                '📢 Ingreso de Visita',
-                                '$name ha ingresado a la instalación (Visita Programada).',
+                                '📢 VISITA AGENDADA',
+                                '$name ha ingresado (Visita Agendada a $destination). Se recomienda dar aviso.',
                                 isAlert: false,
+                              );
+                              _addNotification(
+                                type: 'info',
+                                title: '📢 Visita Agendada - Ingreso',
+                                body: 'Visita agendada $name ingresó a $destination. Se recomienda dar aviso.',
                               );
                             }
 
@@ -2459,9 +2581,13 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                               Navigator.pop(context);
                               ScaffoldMessenger.of(context).showSnackBar(
                                 SnackBar(
-                                  content: Text('Ingreso registrado para: $name'),
-                                  backgroundColor: type == 'persona' ? const Color(0xFF10B981) : const Color(0xFF3B82F6),
-                                  duration: const Duration(seconds: 2),
+                                  content: Text(
+                                    isPreauthVisit
+                                        ? 'Visita Agendada: Ingreso registrado para $name (Dar aviso al residente)'
+                                        : 'Ingreso registrado para: $name',
+                                  ),
+                                  backgroundColor: isPreauthVisit ? Colors.amber.shade800 : (type == 'persona' ? const Color(0xFF10B981) : const Color(0xFF3B82F6)),
+                                  duration: const Duration(seconds: 4),
                                 ),
                               );
                             }
@@ -3870,6 +3996,10 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
         icon: Icon(Icons.block_flipped),
         label: 'Lista Negra',
       ),
+      const BottomNavigationBarItem(
+        icon: Icon(Icons.verified_user_rounded),
+        label: 'Lista Blanca',
+      ),
     ];
     if (widget.userRole == UserRole.admin) {
       items.add(const BottomNavigationBarItem(
@@ -3887,7 +4017,9 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
       return _buildPreAuthTab();
     } else if (_currentTabIndex == 2) {
       return _buildBlacklistTab();
-    } else if (_currentTabIndex == 3 && widget.userRole == UserRole.admin) {
+    } else if (_currentTabIndex == 3) {
+      return _buildWhitelistTab();
+    } else if (_currentTabIndex == 4 && widget.userRole == UserRole.admin) {
       return _buildInstallationsTab();
     }
     return _buildMonitoreoTab();
@@ -5126,6 +5258,489 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
             ],
           ),
         ),
+      ),
+    );
+  }
+
+  // --- LISTA BLANCA TAB & ACTIONS ---
+
+  Widget _buildWhitelistTab() {
+    final filteredWhitelist = _whitelist.where((entry) {
+      if (_whitelistSearchQuery.isNotEmpty) {
+        final query = _whitelistSearchQuery.toLowerCase();
+        final nameMatch = entry.name.toLowerCase().contains(query);
+        final idMatch = entry.identifier.toLowerCase().contains(query);
+        final unitMatch = entry.unitOrRole.toLowerCase().contains(query);
+        return nameMatch || idMatch || unitMatch;
+      }
+      return true;
+    }).toList()..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        // 1. Whitelist Header
+        Container(
+          padding: const EdgeInsets.all(16),
+          color: slate800,
+          child: Row(
+            children: [
+              const Icon(Icons.verified_user_rounded, color: Color(0xFF10B981), size: 40),
+              const SizedBox(width: 12),
+              const Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Lista Blanca (Sin Registro)',
+                      style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white),
+                    ),
+                    Text(
+                      'Residentes o personal que no requieren control ni bitácora',
+                      style: TextStyle(fontSize: 12, color: slate400),
+                    ),
+                  ],
+                ),
+              ),
+              if (widget.userRole == UserRole.admin || widget.userRole == UserRole.cliente)
+                ElevatedButton.icon(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF10B981),
+                    foregroundColor: Colors.white,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                  ),
+                  icon: const Icon(Icons.person_add_alt_1_rounded),
+                  label: const Text('Agregar', style: TextStyle(fontWeight: FontWeight.bold)),
+                  onPressed: _showAddWhitelistModal,
+                ),
+            ],
+          ),
+        ),
+
+        // 2. Search Whitelist
+        Container(
+          color: slate900,
+          padding: const EdgeInsets.all(16),
+          child: TextField(
+            controller: _whitelistSearchController,
+            decoration: InputDecoration(
+              hintText: 'Buscar en lista blanca...',
+              prefixIcon: const Icon(Icons.search, color: slate400),
+              suffixIcon: _whitelistSearchQuery.isNotEmpty
+                  ? IconButton(
+                      icon: const Icon(Icons.clear, color: slate400),
+                      onPressed: () {
+                        _whitelistSearchController.clear();
+                        setState(() => _whitelistSearchQuery = '');
+                      },
+                    )
+                  : null,
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(12),
+                borderSide: const BorderSide(color: slate700),
+              ),
+              enabledBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(12),
+                borderSide: const BorderSide(color: slate700),
+              ),
+              focusedBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(12),
+                borderSide: const BorderSide(color: Color(0xFF10B981), width: 1.5),
+              ),
+              filled: true,
+              fillColor: slate800,
+              contentPadding: const EdgeInsets.symmetric(vertical: 12),
+            ),
+            onChanged: (val) {
+              setState(() {
+                _whitelistSearchQuery = val;
+              });
+            },
+          ),
+        ),
+
+        // 3. Whitelist Entries list
+        Expanded(
+          child: filteredWhitelist.isEmpty
+              ? _buildEmptyState(_whitelistSearchQuery.isNotEmpty, 'Whitelist')
+              : ListView.builder(
+                  padding: const EdgeInsets.only(left: 16, right: 16, top: 8, bottom: 80),
+                  itemCount: filteredWhitelist.length,
+                  itemBuilder: (context, index) {
+                    return _buildWhitelistCard(filteredWhitelist[index]);
+                  },
+                ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildWhitelistCard(WhitelistEntry entry) {
+    final isVehicle = entry.type == 'vehiculo';
+    const accentColor = Color(0xFF10B981);
+    final dateStr = '${entry.createdAt.day}/${entry.createdAt.month}/${entry.createdAt.year}';
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      decoration: BoxDecoration(
+        color: slate800,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: accentColor.withValues(alpha: 0.2),
+          width: 1,
+        ),
+      ),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(16),
+        child: IntrinsicHeight(
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Container(
+                width: 6,
+                color: accentColor,
+              ),
+              const SizedBox(width: 12),
+
+              Expanded(
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 4),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Icon(
+                            isVehicle ? Icons.directions_car_rounded : Icons.person_rounded,
+                            size: 16,
+                            color: accentColor,
+                          ),
+                          const SizedBox(width: 6),
+                          Text(
+                            isVehicle ? 'VEHÍCULO LISTA BLANCA' : 'RESIDENTE / PERSONAL',
+                            style: const TextStyle(
+                              fontSize: 10,
+                              fontWeight: FontWeight.bold,
+                              color: accentColor,
+                              letterSpacing: 0.5,
+                            ),
+                          ),
+                          const Spacer(),
+                          Text(
+                            dateStr,
+                            style: const TextStyle(fontSize: 11, color: slate400),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+
+                      Text(
+                        entry.name,
+                        style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white),
+                      ),
+                      const SizedBox(height: 4),
+
+                      Text(
+                        'RUT/DNI/Patente: ${entry.identifier}',
+                        style: const TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.white70,
+                          letterSpacing: 0.5,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+
+                      Row(
+                        children: [
+                          const Icon(Icons.home_work_rounded, size: 16, color: accentColor),
+                          const SizedBox(width: 6),
+                          Text(
+                            entry.unitOrRole,
+                            style: const TextStyle(fontSize: 13, color: slate300, fontWeight: FontWeight.bold),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+
+              // Button to delete (remove from whitelist)
+              if (widget.userRole == UserRole.admin || widget.userRole == UserRole.cliente)
+                InkWell(
+                  onTap: () => _confirmRemoveWhitelist(entry),
+                  child: Container(
+                    width: 70,
+                    color: Colors.redAccent.withValues(alpha: 0.05),
+                    child: const Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(Icons.delete_outline_rounded, color: Colors.redAccent, size: 24),
+                        SizedBox(height: 4),
+                        Text(
+                          'Quitar',
+                          style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.redAccent,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _showAddWhitelistModal() {
+    final formKey = GlobalKey<FormState>();
+    String name = '';
+    String identifier = '';
+    String type = 'persona';
+    String unitOrRole = '';
+    bool isRut = true;
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: slate800,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (BuildContext context) {
+        return StatefulBuilder(
+          builder: (BuildContext context, StateSetter setModalState) {
+            return Padding(
+              padding: EdgeInsets.only(
+                bottom: MediaQuery.of(context).viewInsets.bottom + 24,
+                left: 20,
+                right: 20,
+                top: 24,
+              ),
+              child: Form(
+                key: formKey,
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Row(
+                        children: [
+                          const Icon(Icons.verified_user_rounded, color: Color(0xFF10B981), size: 28),
+                          const SizedBox(width: 12),
+                          Text(
+                            'Agregar a Lista Blanca',
+                            style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold),
+                          ),
+                          const Spacer(),
+                          IconButton(
+                            icon: const Icon(Icons.close, color: slate400),
+                            onPressed: () => Navigator.pop(context),
+                          )
+                        ],
+                      ),
+                      const Divider(height: 24, color: slate700),
+
+                      // Segment selector for type
+                      Row(
+                        children: [
+                          Expanded(
+                            child: ChoiceChip(
+                              label: const Text('Persona'),
+                              selected: type == 'persona',
+                              onSelected: (selected) {
+                                if (selected) setModalState(() => type = 'persona');
+                              },
+                              backgroundColor: slate900,
+                              selectedColor: const Color(0xFF10B981),
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: ChoiceChip(
+                              label: const Text('Vehículo'),
+                              selected: type == 'vehiculo',
+                              onSelected: (selected) {
+                                if (selected) setModalState(() => type = 'vehiculo');
+                              },
+                              backgroundColor: slate900,
+                              selectedColor: const Color(0xFF10B981),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 16),
+
+                      TextFormField(
+                        decoration: InputDecoration(
+                          labelText: type == 'persona' ? 'Nombre del Residente / Personal' : 'Descripción del Vehículo (Ej: Camioneta Depto 102)',
+                          prefixIcon: const Icon(Icons.person),
+                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                          filled: true,
+                          fillColor: slate900,
+                        ),
+                        validator: (value) => value == null || value.trim().isEmpty ? 'Ingrese un nombre/descripción' : null,
+                        onSaved: (value) => name = value!.trim(),
+                      ),
+                      const SizedBox(height: 16),
+
+                      if (type == 'persona') ...[
+                        Row(
+                          children: [
+                            const Text('Tipo de Doc: ', style: TextStyle(color: slate400, fontSize: 13)),
+                            const SizedBox(width: 8),
+                            ChoiceChip(
+                              label: const Text('RUT', style: TextStyle(fontSize: 12)),
+                              selected: isRut,
+                              onSelected: (selected) {
+                                if (selected) {
+                                  setModalState(() => isRut = true);
+                                }
+                              },
+                              backgroundColor: slate900,
+                              selectedColor: const Color(0xFF10B981).withValues(alpha: 0.3),
+                            ),
+                            const SizedBox(width: 8),
+                            ChoiceChip(
+                              label: const Text('Pasaporte / DNI', style: TextStyle(fontSize: 12)),
+                              selected: !isRut,
+                              onSelected: (selected) {
+                                if (selected) {
+                                  setModalState(() => isRut = false);
+                                }
+                              },
+                              backgroundColor: slate900,
+                              selectedColor: const Color(0xFF10B981).withValues(alpha: 0.3),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 12),
+                      ],
+
+                      TextFormField(
+                        key: ValueKey('whitelist_doc_field_$type-$isRut'),
+                        textCapitalization: type == 'vehiculo' ? TextCapitalization.characters : TextCapitalization.none,
+                        decoration: InputDecoration(
+                          labelText: type == 'vehiculo'
+                              ? 'Patente / Placa'
+                              : (isRut ? 'RUT (Ej: 12.345.678-9)' : 'Identificación (DNI o Pasaporte)'),
+                          prefixIcon: Icon(type == 'vehiculo' ? Icons.tag : Icons.badge),
+                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                          filled: true,
+                          fillColor: slate900,
+                        ),
+                        inputFormatters: type == 'vehiculo'
+                            ? [PlateFormatter()]
+                            : (isRut ? [RutFormatter()] : null),
+                        validator: (value) {
+                          if (value == null || value.trim().isEmpty) {
+                            return type == 'vehiculo' ? 'Ingrese patente' : 'Ingrese identificación';
+                          }
+                          if (type == 'persona' && !isValidDocument(value, isRut)) {
+                            return isRut ? 'RUT inválido' : 'Mínimo 5 caracteres';
+                          }
+                          if (type == 'vehiculo' && !isValidPlate(value)) {
+                            return 'Patente inválida';
+                          }
+                          return null;
+                        },
+                        onSaved: (value) => identifier = value!.trim().toUpperCase(),
+                      ),
+                      const SizedBox(height: 16),
+
+                      TextFormField(
+                        decoration: InputDecoration(
+                          labelText: 'Ubicación / Rol (Ej: Depto 504 / Personal)',
+                          prefixIcon: const Icon(Icons.home_work_rounded),
+                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                          filled: true,
+                          fillColor: slate900,
+                        ),
+                        validator: (value) => value == null || value.trim().isEmpty ? 'Ingrese la ubicación o rol' : null,
+                        onSaved: (value) => unitOrRole = value!.trim(),
+                      ),
+                      const SizedBox(height: 24),
+
+                      ElevatedButton(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: const Color(0xFF10B981),
+                          padding: const EdgeInsets.symmetric(vertical: 16),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                        ),
+                        onPressed: () {
+                          if (formKey.currentState!.validate()) {
+                            formKey.currentState!.save();
+                            final newEntry = WhitelistEntry(
+                              id: 'wl_${DateTime.now().millisecondsSinceEpoch}',
+                              type: type,
+                              name: name,
+                              identifier: identifier,
+                              unitOrRole: unitOrRole,
+                              createdAt: DateTime.now(),
+                            );
+
+                            _whitelistBox.put(newEntry.id, newEntry.toMap());
+                            _refreshUILists();
+
+                            Navigator.pop(context);
+
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Text('Agregado a Lista Blanca: $name'),
+                                backgroundColor: const Color(0xFF10B981),
+                                duration: const Duration(seconds: 2),
+                              ),
+                            );
+                          }
+                        },
+                        child: const Text(
+                          'Guardar en Lista Blanca',
+                          style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  void _confirmRemoveWhitelist(WhitelistEntry entry) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: slate800,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Text('Quitar de Lista Blanca', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+        content: Text('¿Está seguro de quitar a "${entry.name}" (${entry.identifier}) de la Lista Blanca?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancelar', style: TextStyle(color: slate400)),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
+            onPressed: () {
+              _whitelistBox.delete(entry.id);
+              _refreshUILists();
+              Navigator.pop(context);
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(content: Text('Eliminado de Lista Blanca: ${entry.name}')),
+              );
+            },
+            child: const Text('Quitar', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+          ),
+        ],
       ),
     );
   }

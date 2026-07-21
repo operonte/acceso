@@ -22,10 +22,12 @@ class SupabaseSyncManager {
   static late Box _recordsBox;
   static late Box _preAuthBox;
   static late Box _blacklistBox;
+  static late Box _whitelistBox;
 
   static late Box _pendingRecordsBox;
   static late Box _pendingPreAuthBox;
   static late Box _pendingBlacklistBox;
+  static late Box _pendingWhitelistBox;
   static bool _isInitialized = false;
   static bool _isSyncingDown = false;
   static Timer? _syncTimer;
@@ -38,10 +40,12 @@ class SupabaseSyncManager {
     _recordsBox = Hive.box('records_box');
     _preAuthBox = Hive.box('pre_auth_box');
     _blacklistBox = Hive.box('blacklist_box');
+    _whitelistBox = Hive.box('whitelist_box');
 
     _pendingRecordsBox = await Hive.openBox('pending_records_box');
     _pendingPreAuthBox = await Hive.openBox('pending_pre_auth_box');
     _pendingBlacklistBox = await Hive.openBox('pending_blacklist_box');
+    _pendingWhitelistBox = await Hive.openBox('pending_whitelist_box');
 
     // Load last sync time from sync_metadata_box
     final metaBox = Hive.box('sync_metadata_box');
@@ -66,6 +70,11 @@ class SupabaseSyncManager {
     _blacklistBox.watch().listen((event) {
       if (_isSyncingDown) return;
       queueBlacklist(event.key as String);
+    });
+
+    _whitelistBox.watch().listen((event) {
+      if (_isSyncingDown) return;
+      queueWhitelist(event.key as String);
     });
 
     // Subscribe to Supabase Realtime changes
@@ -176,6 +185,11 @@ class SupabaseSyncManager {
 
   static void queueBlacklist(String id) {
     _pendingBlacklistBox.put(id, true);
+    syncAll();
+  }
+
+  static void queueWhitelist(String id) {
+    _pendingWhitelistBox.put(id, true);
     syncAll();
   }
 
