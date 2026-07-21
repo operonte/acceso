@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 
 class NotificationHelper {
@@ -36,6 +37,16 @@ class NotificationHelper {
   }
 
   static Future<void> showNotification(String title, String body, {bool isAlert = false}) async {
+    try {
+      if (isAlert) {
+        SystemSound.play(SystemSoundType.alert);
+        HapticFeedback.vibrate();
+      } else {
+        SystemSound.play(SystemSoundType.click);
+        HapticFeedback.lightImpact();
+      }
+    } catch (_) {}
+
     if (kIsWeb) {
       debugPrint('Web Notification: $title - $body');
       return;

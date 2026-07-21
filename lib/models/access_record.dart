@@ -11,6 +11,7 @@ class AccessRecord {
   bool isInside;
   String? photoPath;
   final String? comment; // Optional comment
+  final String? phone; // Optional contact phone
 
   AccessRecord({
     required this.id,
@@ -25,7 +26,25 @@ class AccessRecord {
     this.isInside = true,
     this.photoPath,
     this.comment,
+    this.phone,
   });
+
+  String get durationText {
+    final end = exitTime ?? DateTime.now();
+    final diff = end.difference(entryTime);
+    if (diff.inDays > 0) {
+      return '${diff.inDays}d ${diff.inHours % 24}h ${diff.inMinutes % 60}m';
+    } else if (diff.inHours > 0) {
+      return '${diff.inHours}h ${diff.inMinutes % 60}m';
+    } else {
+      return '${diff.inMinutes}m';
+    }
+  }
+
+  int get durationMinutes {
+    final end = exitTime ?? DateTime.now();
+    return end.difference(entryTime).inMinutes;
+  }
 
   Map<String, dynamic> toMap() {
     return {
@@ -41,6 +60,9 @@ class AccessRecord {
       'isInside': isInside,
       'photoPath': photoPath,
       'comment': comment,
+      'phone': phone,
+      'durationStay': durationText,
+      'durationMinutes': durationMinutes,
     };
   }
 
@@ -58,6 +80,7 @@ class AccessRecord {
       isInside: map['isInside'] as bool,
       photoPath: map['photoPath'] as String?,
       comment: map['comment'] as String?,
+      phone: map['phone'] as String?,
     );
   }
 }
