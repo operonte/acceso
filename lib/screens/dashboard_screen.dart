@@ -25,6 +25,7 @@ import '../utils/validators.dart';
 import '../utils/file_saver.dart' as file_saver;
 import '../utils/supabase_sync_manager.dart';
 import '../utils/notification_helper.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import 'login_screen.dart' show UserRole;
 
@@ -73,6 +74,41 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
   String _searchQuery = '';
   final TextEditingController _searchController = TextEditingController();
   DateTimeRange? _selectedDateRange;
+
+  // Multi-selection mode for exit batching (WhatsApp style)
+  bool _isSelectionMode = false;
+  final Set<String> _selectedRecordIds = {};
+
+  Future<void> _performBatchExit() async {
+    if (_selectedRecordIds.isEmpty) return;
+
+    final count = _selectedRecordIds.length;
+    final now = DateTime.now();
+
+    for (final id in _selectedRecordIds) {
+      final matchIndex = _records.indexWhere((r) => r.id == id);
+      if (matchIndex != -1) {
+        final record = _records[matchIndex];
+        record.isInside = false;
+        record.exitTime = now;
+        await _recordsBox.put(record.id, record.toMap());
+      }
+    }
+
+    setState(() {
+      _isSelectionMode = false;
+      _selectedRecordIds.clear();
+    });
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('✅ Salida masiva registrada exitosamente para $count elementos.'),
+          backgroundColor: const Color(0xFF10B981),
+        ),
+      );
+    }
+  }
 
   // --- PreAuth View Parameters ---
   String _preAuthSearchQuery = '';
@@ -1221,13 +1257,13 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
 
     // Build CSV Content
     final StringBuffer csvBuffer = StringBuffer();
-    csvBuffer.writeln('ID,Tipo,Nombre,RUT_DNI,Patente_Placa,Tipo_Vehiculo,Destino_Motivo,Fecha_Ingreso,Fecha_Salida,Estado');
+    csvBuffer.writeln('ID,Tipo,Nombre,RUT_DNI,Patente_Placa,Tipo_Vehiculo,Destino_Motivo,Fecha_Ingreso,Fecha_Salida,Tiempo_Permanencia,Estado');
 
     for (var r in exportRecords) {
       final String exitTimeStr = r.exitTime != null ? r.exitTime!.toIso8601String() : 'N/A';
       final String status = r.isInside ? 'En el recinto' : 'Salido';
       csvBuffer.writeln(
-        '"${r.id}","${r.type}","${r.name}","${r.docId}","${r.plate ?? ''}","${r.vehicleType ?? ''}","${r.destination}","${r.entryTime.toIso8601String()}","$exitTimeStr","$status"'
+        '"${r.id}","${r.type}","${r.name}","${r.docId}","${r.plate ?? ''}","${r.vehicleType ?? ''}","${r.destination}","${r.entryTime.toIso8601String()}","$exitTimeStr","${r.durationText}","$status"'
       );
     }
 
@@ -1782,6 +1818,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     final TextEditingController plateController = TextEditingController(text: prefilledPlate ?? '');
     final TextEditingController destinationController = TextEditingController();
     final TextEditingController commentController = TextEditingController();
+    final TextEditingController phoneController = TextEditingController();
     
     String vehicleType = 'Auto';
     bool isRut = prefilledDocId == null || prefilledDocId.isEmpty || RegExp(r'^[0-9kK\.\-]+$').hasMatch(prefilledDocId);
@@ -2266,6 +2303,20 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                       ),
                       const SizedBox(height: 16),
 
+                      TextFormField(
+                        controller: phoneController,
+                        keyboardType: TextInputType.phone,
+                        decoration: InputDecoration(
+                          labelText: 'Teléfono de Contacto (Opcional)',
+                          prefixIcon: const Icon(Icons.phone_android_rounded),
+                          hintText: 'Ej: +56912345678',
+                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                          filled: true,
+                          fillColor: slate900,
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+
                       // Registro Fotográfico
                       const Text(
                         'Registro Fotográfico (Opcional)',
@@ -2558,6 +2609,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                               entryTime: DateTime.now(),
                               photoPath: localPhotoPath,
                               comment: commentController.text.trim().isEmpty ? null : commentController.text.trim(),
+                              phone: phoneController.text.trim().isEmpty ? null : phoneController.text.trim(),
                             );
                             
                             await _recordsBox.put(newRecord.id, newRecord.toMap());
@@ -3161,17 +3213,39 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                             borderRadius: BorderRadius.circular(16),
                             border: Border.all(color: slate700),
                           ),
-                          child: const Text(
-                            'POLÍTICA DE PRIVACIDAD Y PROTECCIÓN DE DATOS\n\n'
-                            '1. RECOPILACIÓN DE INFORMACIÓN\n'
-                            'La aplicación "Acceso" recopila información necesaria para el control de seguridad y flujo de personas de los recintos autorizados. Esto incluye nombres, números de RUT/DNI, patentes de vehículos, comentarios de acceso y fotografías tomadas al momento de ingreso.\n\n'
-                            '2. USO DE LOS DATOS\n'
-                            'Toda la información recopilada tiene como fin único el registro histórico de accesos y la gestión de la Lista Negra del recinto para garantizar la seguridad perimetral. Los datos no son vendidos, arrendados ni compartidos con terceros para fines comerciales.\n\n'
-                            '3. SEGURIDAD DE LOS DATOS\n'
-                            'Los datos se almacenan localmente en el sandbox seguro del dispositivo móvil y se sincronizan a través de canales encriptados HTTPS/TLS con la base de datos centralizada bajo estrictas políticas de acceso restringido.\n\n'
-                            '4. DERECHOS ARCO\n'
-                            'Los titulares de los datos tienen derecho a solicitar el acceso, rectificación o eliminación de sus registros del sistema poniéndose en contacto con el administrador del respectivo recinto.',
-                            style: TextStyle(color: slate300, fontSize: 13, height: 1.5),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              const Text(
+                                'POLÍTICA DE PRIVACIDAD Y PROTECCIÓN DE DATOS\n\n'
+                                '1. RECOPILACIÓN DE INFORMACIÓN\n'
+                                'La aplicación "Acceso" recopila información necesaria para el control de seguridad y flujo de personas de los recintos autorizados. Esto incluye nombres, números de RUT/DNI, patentes de vehículos, comentarios de acceso y fotografías tomadas al momento de ingreso.\n\n'
+                                '2. USO DE LOS DATOS\n'
+                                'Toda la información recopilada tiene como fin único el registro histórico de accesos y la gestión de la Lista Negra del recinto para garantizar la seguridad perimetral. Los datos no son vendidos, arrendados ni compartidos con terceros para fines comerciales.\n\n'
+                                '3. SEGURIDAD DE LOS DATOS\n'
+                                'Los datos se almacenan localmente en el sandbox seguro del dispositivo móvil y se sincronizan a través de canales encriptados HTTPS/TLS con la base de datos centralizada bajo estrictas políticas de acceso restringido.\n\n'
+                                '4. DERECHOS ARCO\n'
+                                'Los titulares de los datos tienen derecho a solicitar el acceso, rectificación o eliminación de sus registros del sistema poniéndose en contacto con el administrador del respectivo recinto.',
+                                style: TextStyle(color: slate300, fontSize: 13, height: 1.5),
+                              ),
+                              const SizedBox(height: 16),
+                              ElevatedButton.icon(
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: const Color(0xFF3B82F6),
+                                  foregroundColor: Colors.white,
+                                  padding: const EdgeInsets.symmetric(vertical: 12),
+                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                                ),
+                                icon: const Icon(Icons.open_in_new_rounded, size: 18),
+                                label: const Text('Ver Política Oficial en Web', style: TextStyle(fontWeight: FontWeight.bold)),
+                                onPressed: () async {
+                                  final uri = Uri.parse('https://cristianbravo-dev.web.app/es/privacy/acceso');
+                                  if (await canLaunchUrl(uri)) {
+                                    await launchUrl(uri, mode: LaunchMode.externalApplication);
+                                  }
+                                },
+                              ),
+                            ],
                           ),
                         ),
                         
@@ -3819,14 +3893,44 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
       appBar: AppBar(
         backgroundColor: slate800,
         elevation: 0,
-        titleSpacing: 12,
+        automaticallyImplyLeading: false,
+        leading: ValueListenableBuilder<bool>(
+          valueListenable: SupabaseSyncManager.isOnline,
+          builder: (context, isOnline, child) {
+            return ValueListenableBuilder<bool>(
+              valueListenable: SupabaseSyncManager.isSyncing,
+              builder: (context, isSyncing, child) {
+                return IconButton(
+                  constraints: const BoxConstraints(minWidth: 38, minHeight: 38),
+                  padding: EdgeInsets.zero,
+                  tooltip: isOnline 
+                      ? (isSyncing ? 'Sincronizando...' : 'Nube conectada & sincronizada')
+                      : 'Modo Offline - Guardado local',
+                  icon: isSyncing
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2.5, color: Color(0xFF10B981)),
+                        )
+                      : Icon(
+                          isOnline ? Icons.cloud_done_rounded : Icons.cloud_off_rounded,
+                          size: 22,
+                          color: isOnline ? const Color(0xFF10B981) : Colors.orangeAccent,
+                        ),
+                  onPressed: () => SupabaseSyncManager.syncAll(),
+                );
+              },
+            );
+          },
+        ),
+        titleSpacing: 4,
         title: Row(
           children: [
-            const Icon(Icons.security, color: Color(0xFF10B981), size: 20),
+            const Icon(Icons.security, color: Color(0xFF10B981), size: 18),
             const SizedBox(width: 6),
             const Text(
               'CONTROL ACCESO',
-              style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: Colors.white, letterSpacing: 0.5),
+              style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.white, letterSpacing: 0.5),
             ),
             const SizedBox(width: 6),
             Container(
@@ -3858,36 +3962,6 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
           ],
         ),
         actions: [
-          // Cloud sync status indicator
-          ValueListenableBuilder<bool>(
-            valueListenable: SupabaseSyncManager.isOnline,
-            builder: (context, isOnline, child) {
-              return ValueListenableBuilder<bool>(
-                valueListenable: SupabaseSyncManager.isSyncing,
-                builder: (context, isSyncing, child) {
-                  return IconButton(
-                    constraints: const BoxConstraints(minWidth: 34, minHeight: 34),
-                    padding: const EdgeInsets.all(4),
-                    tooltip: isOnline 
-                        ? (isSyncing ? 'Sincronizando...' : 'Sincronizado')
-                        : 'Modo Offline',
-                    icon: isSyncing
-                        ? const SizedBox(
-                            width: 16,
-                            height: 16,
-                            child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF10B981)),
-                          )
-                        : Icon(
-                            isOnline ? Icons.cloud_done_rounded : Icons.cloud_off_rounded,
-                            size: 20,
-                            color: isOnline ? const Color(0xFF10B981) : Colors.redAccent,
-                          ),
-                    onPressed: () => SupabaseSyncManager.syncAll(),
-                  );
-                },
-              );
-            },
-          ),
 
           // Notifications button
           Stack(
@@ -4069,11 +4143,138 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     );
   }
 
+  Widget _buildPeakHoursChart() {
+    final brackets = <String, int>{
+      '00-04h': 0,
+      '04-08h': 0,
+      '08-12h': 0,
+      '12-16h': 0,
+      '16-20h': 0,
+      '20-24h': 0,
+    };
+
+    int maxCount = 0;
+    String peakBracket = '';
+
+    for (final r in _records) {
+      final hour = r.entryTime.hour;
+      String key = '20-24h';
+      if (hour >= 0 && hour < 4) {
+        key = '00-04h';
+      } else if (hour >= 4 && hour < 8) {
+        key = '04-08h';
+      } else if (hour >= 8 && hour < 12) {
+        key = '08-12h';
+      } else if (hour >= 12 && hour < 16) {
+        key = '12-16h';
+      } else if (hour >= 16 && hour < 20) {
+        key = '16-20h';
+      }
+
+      brackets[key] = (brackets[key] ?? 0) + 1;
+      if (brackets[key]! > maxCount) {
+        maxCount = brackets[key]!;
+        peakBracket = key;
+      }
+    }
+
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: slate800,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFF10B981).withValues(alpha: 0.3)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.bar_chart_rounded, color: Color(0xFF10B981), size: 22),
+              const SizedBox(width: 8),
+              const Expanded(
+                child: Text(
+                  'Distribución de Tráfico por Horario (Exclusivo Admin)',
+                  style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold),
+                ),
+              ),
+              if (peakBracket.isNotEmpty && maxCount > 0)
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: Colors.amber.withValues(alpha: 0.2),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: Colors.amber),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(Icons.local_fire_department_rounded, color: Colors.amber, size: 14),
+                      const SizedBox(width: 4),
+                      Text(
+                        'Pico: $peakBracket ($maxCount)',
+                        style: const TextStyle(color: Colors.amber, fontSize: 11, fontWeight: FontWeight.bold),
+                      ),
+                    ],
+                  ),
+                ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            mainAxisAlignment: MainAxisAlignment.spaceAround,
+            children: brackets.entries.map((e) {
+              final isPeak = e.key == peakBracket && maxCount > 0;
+              final double heightRatio = maxCount > 0 ? (e.value / maxCount) : 0.0;
+              final barHeight = (heightRatio * 50).clamp(6.0, 50.0);
+
+              return Column(
+                children: [
+                  Text(
+                    '${e.value}',
+                    style: TextStyle(
+                      fontSize: 10,
+                      fontWeight: FontWeight.bold,
+                      color: isPeak ? Colors.amber : Colors.white70,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Container(
+                    width: 26,
+                    height: barHeight,
+                    decoration: BoxDecoration(
+                      color: isPeak ? Colors.amber : const Color(0xFF10B981),
+                      borderRadius: const BorderRadius.vertical(top: Radius.circular(6)),
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    e.key,
+                    style: TextStyle(
+                      fontSize: 10,
+                      color: isPeak ? Colors.amber : slate400,
+                      fontWeight: isPeak ? FontWeight.bold : FontWeight.normal,
+                    ),
+                  ),
+                ],
+              );
+            }).toList(),
+          ),
+        ],
+      ),
+    );
+  }
+
   // --- Monitoreo Tab UI ---
   Widget _buildMonitoreoTab() {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        // Peak Hours Chart for Admin
+        if (widget.userRole == UserRole.admin)
+          _buildPeakHoursChart(),
         // 1. Sleek Compact Header & Action Row
         Container(
           padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
@@ -4361,6 +4562,59 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
           ),
         ),
 
+        // Batch Exit Toolbar (WhatsApp style multi-selection)
+        if (_isSelectionMode)
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            decoration: BoxDecoration(
+              color: const Color(0xFF10B981).withValues(alpha: 0.2),
+              border: const Border(bottom: BorderSide(color: Color(0xFF10B981), width: 1.5)),
+            ),
+            child: Row(
+              children: [
+                IconButton(
+                  icon: const Icon(Icons.close, color: Colors.white, size: 20),
+                  tooltip: 'Cancelar Selección',
+                  onPressed: () {
+                    setState(() {
+                      _isSelectionMode = false;
+                      _selectedRecordIds.clear();
+                    });
+                  },
+                ),
+                const SizedBox(width: 4),
+                Text(
+                  '${_selectedRecordIds.length} seleccionados',
+                  style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
+                ),
+                const Spacer(),
+                TextButton(
+                  onPressed: () {
+                    setState(() {
+                      _selectedRecordIds.clear();
+                      for (final r in _filteredRecords) {
+                        if (r.isInside) _selectedRecordIds.add(r.id);
+                      }
+                    });
+                  },
+                  child: const Text('Todos', style: TextStyle(color: Color(0xFF10B981), fontWeight: FontWeight.bold, fontSize: 12)),
+                ),
+                const SizedBox(width: 6),
+                ElevatedButton.icon(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF10B981),
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                  ),
+                  icon: const Icon(Icons.logout_rounded, size: 16),
+                  label: Text('Salida Masiva (${_selectedRecordIds.length})', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
+                  onPressed: _performBatchExit,
+                ),
+              ],
+            ),
+          ),
+
         // 3. Records List View
         Expanded(
           child: _filteredRecords.isEmpty
@@ -4609,17 +4863,48 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
   Widget _buildRecordCard(AccessRecord record) {
     final isVehicle = record.type == 'vehiculo';
     final cardAccentColor = isVehicle ? const Color(0xFF3B82F6) : const Color(0xFF10B981);
+    final isSelected = _selectedRecordIds.contains(record.id);
 
     return GestureDetector(
-      onTap: () => _showRecordDetailsModal(record),
+      onLongPress: () {
+        if (record.isInside) {
+          setState(() {
+            _isSelectionMode = true;
+            if (isSelected) {
+              _selectedRecordIds.remove(record.id);
+              if (_selectedRecordIds.isEmpty) _isSelectionMode = false;
+            } else {
+              _selectedRecordIds.add(record.id);
+            }
+          });
+        }
+      },
+      onTap: () {
+        if (_isSelectionMode) {
+          if (record.isInside) {
+            setState(() {
+              if (isSelected) {
+                _selectedRecordIds.remove(record.id);
+                if (_selectedRecordIds.isEmpty) _isSelectionMode = false;
+              } else {
+                _selectedRecordIds.add(record.id);
+              }
+            });
+          }
+        } else {
+          _showRecordDetailsModal(record);
+        }
+      },
       child: Container(
       margin: const EdgeInsets.only(bottom: 12),
       decoration: BoxDecoration(
-        color: slate800,
+        color: isSelected ? const Color(0xFF10B981).withValues(alpha: 0.15) : slate800,
         borderRadius: BorderRadius.circular(16),
         border: Border.all(
-          color: record.isInside ? cardAccentColor.withValues(alpha: 0.2) : Colors.transparent,
-          width: 1,
+          color: isSelected 
+              ? const Color(0xFF10B981) 
+              : (record.isInside ? cardAccentColor.withValues(alpha: 0.2) : Colors.transparent),
+          width: isSelected ? 2 : 1,
         ),
       ),
       child: ClipRRect(
@@ -4628,6 +4913,17 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
+              if (_isSelectionMode && record.isInside)
+                Padding(
+                  padding: const EdgeInsets.only(left: 12),
+                  child: Center(
+                    child: Icon(
+                      isSelected ? Icons.check_circle_rounded : Icons.radio_button_unchecked_rounded,
+                      color: isSelected ? const Color(0xFF10B981) : slate400,
+                      size: 24,
+                    ),
+                  ),
+                ),
               Container(
                 width: 6,
                 color: record.isInside ? cardAccentColor : slate600,
@@ -4658,11 +4954,27 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                             ),
                           ),
                           const Spacer(),
-                          Text(
-                            record.isInside ? _formatDuration(record.entryTime) : 'Salida registrada',
-                            style: TextStyle(
-                              fontSize: 11,
-                              color: record.isInside ? const Color(0xFF10B981) : slate400,
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                            decoration: BoxDecoration(
+                              color: record.isInside ? const Color(0xFF10B981).withValues(alpha: 0.15) : slate900,
+                              borderRadius: BorderRadius.circular(6),
+                              border: Border.all(color: record.isInside ? const Color(0xFF10B981).withValues(alpha: 0.4) : slate700),
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(Icons.timer_outlined, size: 12, color: record.isInside ? const Color(0xFF10B981) : slate400),
+                                const SizedBox(width: 4),
+                                Text(
+                                  record.isInside ? 'En recinto: ${record.durationText}' : 'Permanencia: ${record.durationText}',
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.bold,
+                                    color: record.isInside ? const Color(0xFF10B981) : slate300,
+                                  ),
+                                ),
+                              ],
                             ),
                           ),
                         ],
@@ -4729,6 +5041,72 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                         ],
                       ),
                       const SizedBox(height: 8),
+
+                      if (record.phone != null && record.phone!.trim().isNotEmpty) ...[
+                        Row(
+                          children: [
+                            const Icon(Icons.phone_android_rounded, size: 14, color: Color(0xFF10B981)),
+                            const SizedBox(width: 4),
+                            Text(
+                              record.phone!,
+                              style: const TextStyle(fontSize: 12, color: Colors.white, fontWeight: FontWeight.bold),
+                            ),
+                            const Spacer(),
+                            // Call button
+                            InkWell(
+                              onTap: () async {
+                                final cleanPhone = record.phone!.replaceAll(RegExp(r'[^0-9+]'), '');
+                                final url = Uri.parse('tel:$cleanPhone');
+                                if (await canLaunchUrl(url)) {
+                                  await launchUrl(url);
+                                }
+                              },
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFF10B981).withValues(alpha: 0.2),
+                                  borderRadius: BorderRadius.circular(6),
+                                  border: Border.all(color: const Color(0xFF10B981).withValues(alpha: 0.5)),
+                                ),
+                                child: const Row(
+                                  children: [
+                                    Icon(Icons.call, size: 12, color: Color(0xFF10B981)),
+                                    SizedBox(width: 4),
+                                    Text('Llamar', style: TextStyle(fontSize: 11, color: Color(0xFF10B981), fontWeight: FontWeight.bold)),
+                                  ],
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            // WhatsApp button
+                            InkWell(
+                              onTap: () async {
+                                final cleanPhone = record.phone!.replaceAll(RegExp(r'[^0-9]'), '');
+                                final url = Uri.parse('https://wa.me/$cleanPhone');
+                                if (await canLaunchUrl(url)) {
+                                  await launchUrl(url, mode: LaunchMode.externalApplication);
+                                }
+                              },
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFF25D366).withValues(alpha: 0.2),
+                                  borderRadius: BorderRadius.circular(6),
+                                  border: Border.all(color: const Color(0xFF25D366).withValues(alpha: 0.5)),
+                                ),
+                                child: const Row(
+                                  children: [
+                                    Icon(Icons.chat_bubble_rounded, size: 12, color: Color(0xFF25D366)),
+                                    SizedBox(width: 4),
+                                    Text('WhatsApp', style: TextStyle(fontSize: 11, color: Color(0xFF25D366), fontWeight: FontWeight.bold)),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                      ],
 
                       Row(
                         children: [
