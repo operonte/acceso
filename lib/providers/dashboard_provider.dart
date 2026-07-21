@@ -6,6 +6,7 @@ import 'package:hive_flutter/hive_flutter.dart';
 import '../models/access_record.dart';
 import '../models/pre_auth_record.dart';
 import '../models/blacklist_entry.dart';
+import '../models/whitelist_entry.dart';
 import '../models/app_notification.dart';
 import '../utils/supabase_sync_manager.dart';
 
@@ -13,6 +14,7 @@ class DashboardState {
   final List<AccessRecord> allRecords;
   final List<PreAuthRecord> allPreAuths;
   final List<BlacklistEntry> allBlacklist;
+  final List<WhitelistEntry> allWhitelist;
   
   final List<AppNotification> notifications;
   final AppNotification? activeBannerNotification;
@@ -26,11 +28,13 @@ class DashboardState {
   
   final String preAuthSearchQuery;
   final String blacklistSearchQuery;
+  final String whitelistSearchQuery;
 
   DashboardState({
     required this.allRecords,
     required this.allPreAuths,
     required this.allBlacklist,
+    required this.allWhitelist,
     required this.notifications,
     this.activeBannerNotification,
     this.activeTabIndex = 0,
@@ -40,12 +44,14 @@ class DashboardState {
     this.selectedDateRange,
     this.preAuthSearchQuery = '',
     this.blacklistSearchQuery = '',
+    this.whitelistSearchQuery = '',
   });
 
   DashboardState copyWith({
     List<AccessRecord>? allRecords,
     List<PreAuthRecord>? allPreAuths,
     List<BlacklistEntry>? allBlacklist,
+    List<WhitelistEntry>? allWhitelist,
     List<AppNotification>? notifications,
     AppNotification? Function()? activeBannerNotification,
     int? activeTabIndex,
@@ -55,11 +61,13 @@ class DashboardState {
     DateTimeRange? Function()? selectedDateRange,
     String? preAuthSearchQuery,
     String? blacklistSearchQuery,
+    String? whitelistSearchQuery,
   }) {
     return DashboardState(
       allRecords: allRecords ?? this.allRecords,
       allPreAuths: allPreAuths ?? this.allPreAuths,
       allBlacklist: allBlacklist ?? this.allBlacklist,
+      allWhitelist: allWhitelist ?? this.allWhitelist,
       notifications: notifications ?? this.notifications,
       activeBannerNotification: activeBannerNotification != null ? activeBannerNotification() : this.activeBannerNotification,
       activeTabIndex: activeTabIndex ?? this.activeTabIndex,
@@ -69,6 +77,7 @@ class DashboardState {
       selectedDateRange: selectedDateRange != null ? selectedDateRange() : this.selectedDateRange,
       preAuthSearchQuery: preAuthSearchQuery ?? this.preAuthSearchQuery,
       blacklistSearchQuery: blacklistSearchQuery ?? this.blacklistSearchQuery,
+      whitelistSearchQuery: whitelistSearchQuery ?? this.whitelistSearchQuery,
     );
   }
 
@@ -145,6 +154,16 @@ class DashboardState {
     }).toList();
   }
 
+  List<WhitelistEntry> get filteredWhitelist {
+    if (whitelistSearchQuery.isEmpty) return allWhitelist;
+    final query = whitelistSearchQuery.toLowerCase();
+    return allWhitelist.where((entry) {
+      return entry.name.toLowerCase().contains(query) ||
+             entry.identifier.toLowerCase().contains(query) ||
+             entry.unitOrRole.toLowerCase().contains(query);
+    }).toList();
+  }
+
   // Stats
   int get peopleInside => allRecords.where((r) => r.type == 'persona' && r.isInside).length;
   int get vehiclesInside => allRecords.where((r) => r.type == 'vehiculo' && r.isInside).length;
@@ -158,16 +177,19 @@ class DashboardNotifier extends Notifier<DashboardState> {
   late Box _recordsBox;
   late Box _preAuthBox;
   late Box _blacklistBox;
+  late Box _whitelistBox;
 
   StreamSubscription? _recordsSubscription;
   StreamSubscription? _preAuthSubscription;
   StreamSubscription? _blacklistSubscription;
+  StreamSubscription? _whitelistSubscription;
 
   @override
   DashboardState build() {
     _recordsBox = Hive.box('records_box');
     _preAuthBox = Hive.box('pre_auth_box');
     _blacklistBox = Hive.box('blacklist_box');
+    _whitelistBox = Hive.box('whitelist_box');
 
     // Subscribe to Hive box changes
     _recordsSubscription?.cancel();
@@ -214,16 +236,21 @@ class DashboardNotifier extends Notifier<DashboardState> {
     _blacklistSubscription?.cancel();
     _blacklistSubscription = _blacklistBox.watch().listen((_) => _reloadBlacklist());
 
+    _whitelistSubscription?.cancel();
+    _whitelistSubscription = _whitelistBox.watch().listen((_) => _reloadWhitelist());
+
     ref.onDispose(() {
       _recordsSubscription?.cancel();
       _preAuthSubscription?.cancel();
       _blacklistSubscription?.cancel();
+      _whitelistSubscription?.cancel();
     });
 
     return DashboardState(
       allRecords: _fetchRecords(),
       allPreAuths: _fetchPreAuths(),
       allBlacklist: _fetchBlacklist(),
+      allWhitelist: _fetchWhitelist(),
       notifications: [],
     );
   }
@@ -247,6 +274,12 @@ class DashboardNotifier extends Notifier<DashboardState> {
     }).toList()..sort((a, b) => b.createdAt.compareTo(a.createdAt));
   }
 
+  List<WhitelistEntry> _fetchWhitelist() {
+    return _whitelistBox.values.map((item) {
+      return WhitelistEntry.fromMap(Map<dynamic, dynamic>.from(item as Map));
+    }).toList()..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+  }
+
   // --- Reload state ---
   void _reloadRecords() {
     state = state.copyWith(allRecords: _fetchRecords());
@@ -258,6 +291,10 @@ class DashboardNotifier extends Notifier<DashboardState> {
 
   void _reloadBlacklist() {
     state = state.copyWith(allBlacklist: _fetchBlacklist());
+  }
+
+  void _reloadWhitelist() {
+    state = state.copyWith(allWhitelist: _fetchWhitelist());
   }
 
   // --- Actions/State Mutators ---
@@ -287,6 +324,10 @@ class DashboardNotifier extends Notifier<DashboardState> {
 
   void setBlacklistSearchQuery(String query) {
     state = state.copyWith(blacklistSearchQuery: query);
+  }
+
+  void setWhitelistSearchQuery(String query) {
+    state = state.copyWith(whitelistSearchQuery: query);
   }
 
   void addNotification({required String type, required String title, required String body}) {

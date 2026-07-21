@@ -25,6 +25,7 @@ void main() async {
   await Hive.openBox('records_box');
   await Hive.openBox('pre_auth_box');
   await Hive.openBox('blacklist_box');
+  await Hive.openBox('whitelist_box');
   await Hive.openBox('installations_box');
   await Hive.openBox('destinations_box');
   await Hive.openBox('sync_metadata_box');
