@@ -120,10 +120,10 @@ class _LoginScreenState extends State<LoginScreen> {
       
       // Check cached admin key
       final cachedAdminKey = installationsBox.get('_admin_cached_key') as String?;
-      // Safe default key if database has never been connected yet (First run)
-      final adminPassword = cachedAdminKey ?? '***REMOVED***';
-
-      if (password == adminPassword) {
+      // Sin clave por defecto: si el equipo nunca se conectó a la base de datos
+      // (primer ingreso) no hay clave de administrador guardada, y el ingreso
+      // exige conexión. Así ninguna clave viaja escrita en el código.
+      if (cachedAdminKey != null && password == cachedAdminKey) {
         final sessionBox = Hive.box('session_box');
         await sessionBox.put('active_role', 'admin');
         await sessionBox.put('active_installation', null);

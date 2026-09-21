@@ -46,10 +46,12 @@ Para reducir la deuda técnica y adherir a los principios **SOLID**, la pantalla
 
 * **Importación Masiva de Datos:** Soporte para subir archivos CSV (con delimitador auto-detectado `,` o `;`) para poblar listas de pre-autorizaciones y listas negras.
 * **Escaneo QR y Patentes:** Cámara integrada para leer códigos de pre-autorizaciones o capturar fotografías de registros.
-* **Control de Roles:** Niveles de accesos delimitados por claves fijas locales:
-  * `***REMOVED***` ➔ **Administrador** (Acceso completo, creación, edición, eliminación y exportación).
-  * `***REMOVED***` ➔ **Operador Guardia** (Lectura, registro de accesos y escaneo).
-  * `***REMOVED***` ➔ **Vista Cliente** (Solo lectura y exportación).
+* **Control de Roles:** cada persona ingresa con la clave que le asigna el administrador, y esa clave define su perfil:
+  * **Administrador:** acceso completo (creación, edición, eliminación y exportación).
+  * **Operador Guardia:** lectura, registro de accesos y escaneo.
+  * **Vista Cliente:** solo lectura y exportación.
+
+  La app no trae claves por defecto: las claves se crean y administran desde el sistema, y el primer ingreso de cada equipo requiere conexión para validarlas.
 * **Resiliencia Offline:** Almacenamiento local persistente garantizado; no hay pérdida de información si la red colapsa en el punto de control.
 
 ---
